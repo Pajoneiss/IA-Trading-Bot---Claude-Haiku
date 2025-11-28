@@ -1,0 +1,51 @@
+# Railway Ignore File
+# Arquivos que não devem ser enviados ao Railway
+
+# Ambientes virtuais
+venv/
+env/
+ENV/
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Environments
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Testes
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Documentação desnecessária no deploy
+*.md
+!README_RAILWAY.md
+INTEGRATION_GUIDE.md
+ENTREGA_COMPLETA.txt
+STATUS_FINAL.txt
+
+# Scripts de teste local
+test_*.py
+install_bot.bat

@@ -1,0 +1,29 @@
+# Bot Hyperliquid 24/7 com IA - Dependências
+
+# Core dependencies
+python-dotenv>=1.0.0
+
+# Hyperliquid
+hyperliquid-python-sdk>=0.2.0
+eth-account>=0.10.0
+web3>=6.0.0
+requests>=2.31.0
+msgpack>=1.0.0
+
+# AI Decision Engine
+anthropic>=0.39.0
+
+# Data processing & indicators
+numpy>=1.24.0
+pandas>=2.0.0
+
+# Utilities
+httpx>=0.25.0
+
+# Optional: Para análise avançada (descomente se precisar)
+# ta-lib>=0.4.28  # Requer compilação C
+# matplotlib>=3.7.0  # Para gráficos
+# plotly>=5.17.0  # Para gráficos
+
+# Telegram Interactive
+pyTelegramBotAPI>=4.14.0
