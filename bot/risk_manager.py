@@ -13,9 +13,9 @@ class RiskManager:
     """Gerenciador de Risco para o bot"""
     
     def __init__(self,
-                 risk_per_trade_pct: float = 2.0,
+                 risk_per_trade_pct: float = 10.0,
                  max_daily_drawdown_pct: float = 10.0,
-                 max_open_trades: int = 3,
+                 max_open_trades: int = 10,
                  max_leverage: int = 50,
                  min_notional: float = 0.5):
         """
