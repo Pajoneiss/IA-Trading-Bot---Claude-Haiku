@@ -440,10 +440,25 @@ class HyperliquidBot:
         self.paused = False  # Flag para pausar trading via Telegram
         
         # ========== CONTROLE DE CHAMADAS IA ==========
-        # IA só é chamada a cada X minutos para economizar créditos
+        # Constante para intervalo de SCALP (fixo em código)
+        self.SCALP_CALL_INTERVAL_MINUTES = 5
+        
+        # IA SWING (Claude) - intervalo configurável
         self.ai_call_interval = int(os.getenv('AI_CALL_INTERVAL_MINUTES', '15')) * 60  # Em segundos
-        self.last_ai_call_time = 0  # Timestamp da última chamada
-        self.last_ai_decisions = []  # Cache das últimas decisões da IA
+        self.last_swing_ai_call = 0  # Timestamp da última chamada SWING
+        
+        # IA SCALP (OpenAI) - intervalo fixo de 5 minutos
+        self.scalp_call_interval = self.SCALP_CALL_INTERVAL_MINUTES * 60  # Em segundos
+        self.last_scalp_ai_call = 0  # Timestamp da última chamada SCALP
+        
+        # Cache de decisões
+        self.last_swing_decisions = []  # Cache das últimas decisões SWING
+        self.last_scalp_decisions = []  # Cache das últimas decisões SCALP
+        
+        # Flag para habilitar OpenAI
+        self.openai_enabled = bool(config.get('openai_api_key'))
+        if not self.openai_enabled:
+            self.logger.info("[AI] OpenAI SCALP desativado: OPENAI_API_KEY não configurada.")
         # ================================================
         
         self.logger.info("=" * 60)
@@ -454,7 +469,9 @@ class HyperliquidBot:
         self.logger.info(f"IA: {'Ativada ✅' if config.get('anthropic_api_key') else 'Desativada (fallback)'}")
         self.logger.info(f"🛡️ Anti-Overtrading: cooldown={self.action_cooldown_seconds}s, min_conf_adjust={self.min_confidence_adjust}")
         self.logger.info(f"📱 Telegram: {'Ativado ✅' if self.telegram.enabled else 'Desativado'}")
-        self.logger.info(f"🧠 IA chamada a cada: {self.ai_call_interval // 60} minutos")
+        self.logger.info(f"🧠 IA SWING chamada a cada: {self.ai_call_interval // 60} minutos")
+        if self.openai_enabled:
+            self.logger.info(f"⚡ IA SCALP chamada a cada: {self.SCALP_CALL_INTERVAL_MINUTES} minutos")
         self.logger.info("=" * 60)
         
         self.risk_manager.log_risk_limits()
@@ -625,13 +642,15 @@ class HyperliquidBot:
         for action in close_actions:
             self._execute_close(action, all_prices)
         
-        # 6. Consultar IA para novas decisões (APENAS A CADA X MINUTOS)
+        # 6. Consultar IA para novas decisões (INTERVALOS INDEPENDENTES)
         current_time = time.time()
-        time_since_last_ai = current_time - self.last_ai_call_time
         
-        if time_since_last_ai >= self.ai_call_interval:
-            # Hora de chamar a IA!
-            self.logger.info(f"🤖 Consultando IA para decisões... (última chamada há {time_since_last_ai/60:.1f} min)")
+        # === SWING / CLAUDE ===
+        time_since_last_swing = current_time - self.last_swing_ai_call
+        swing_decisions = []
+        
+        if time_since_last_swing >= self.ai_call_interval:
+            self.logger.info(f"🤖 [AI] Consultando IA SWING (Claude)... (última chamada há {time_since_last_swing/60:.1f} min)")
             
             account_info = {
                 'equity': equity,
@@ -646,24 +665,69 @@ class HyperliquidBot:
                 'max_leverage': self.risk_manager.max_leverage
             }
             
-            ai_decisions = self.ai_engine.decide(
+            # Chama apenas o motor SWING
+            all_decisions = self.ai_engine.swing_engine.decide(
                 market_contexts=market_contexts,
                 account_info=account_info,
                 open_positions=self.position_manager.get_all_positions(),
                 risk_limits=risk_limits
             )
             
-            # Atualiza cache e timestamp
-            self.last_ai_decisions = ai_decisions
-            self.last_ai_call_time = current_time
+            # Filtra apenas decisões de swing e adiciona tags
+            for dec in all_decisions:
+                if dec.get('action') != 'hold':
+                    dec['source'] = 'claude_swing'
+                    dec['style'] = 'swing'
+                    swing_decisions.append(dec)
             
+            self.last_swing_decisions = swing_decisions
+            self.last_swing_ai_call = current_time
         else:
-            # Usa decisões em cache (ou lista vazia se não houver)
-            remaining = (self.ai_call_interval - time_since_last_ai) / 60
-            self.logger.info(f"⏳ Próxima consulta IA em {remaining:.1f} min (usando cache: {len(self.last_ai_decisions)} decisões)")
-            ai_decisions = self.last_ai_decisions
+            remaining = (self.ai_call_interval - time_since_last_swing) / 60
+            self.logger.info(f"⏳ Próxima consulta SWING em {remaining:.1f} min (usando cache: {len(self.last_swing_decisions)} decisões)")
+            swing_decisions = self.last_swing_decisions
         
-        # 7. Executar decisões da IA (SIMPLIFICADO - IA é autônoma)
+        # === SCALP / OPENAI ===
+        scalp_decisions = []
+        
+        if self.openai_enabled:
+            time_since_last_scalp = current_time - self.last_scalp_ai_call
+            
+            if time_since_last_scalp >= self.scalp_call_interval:
+                self.logger.info(f"⚡ [AI] Consultando IA SCALP (OpenAI)... (última chamada há {time_since_last_scalp/60:.1f} min)")
+                
+                account_info = {
+                    'equity': equity,
+                    'daily_pnl_pct': self.risk_manager.daily_drawdown_pct,
+                    'daily_drawdown_pct': self.risk_manager.daily_drawdown_pct
+                }
+                
+                risk_limits = {
+                    'risk_per_trade_pct': self.risk_manager.risk_per_trade_pct,
+                    'max_daily_drawdown_pct': self.risk_manager.max_daily_drawdown_pct,
+                    'max_open_trades': self.risk_manager.max_open_trades,
+                    'max_leverage': self.risk_manager.max_leverage
+                }
+                
+                # Chama apenas o motor SCALP
+                scalp_decisions = self.ai_engine.scalp_engine.get_scalp_decision(
+                    market_contexts=market_contexts,
+                    account_info=account_info,
+                    open_positions=self.position_manager.get_all_positions(),
+                    risk_limits=risk_limits
+                )
+                
+                self.last_scalp_decisions = scalp_decisions
+                self.last_scalp_ai_call = current_time
+            else:
+                remaining = (self.scalp_call_interval - time_since_last_scalp) / 60
+                self.logger.info(f"⏳ Próxima consulta SCALP em {remaining:.1f} min (usando cache: {len(self.last_scalp_decisions)} decisões)")
+                scalp_decisions = self.last_scalp_decisions
+        
+        # Combina decisões de ambos os motores
+        ai_decisions = swing_decisions + scalp_decisions
+        
+        # 7. Executar decisões da IA
         for decision in ai_decisions:
             action = decision.get('action', '')
             symbol = decision.get('symbol', 'UNKNOWN')

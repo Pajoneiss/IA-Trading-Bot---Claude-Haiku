@@ -62,23 +62,28 @@ class TelegramInteractive:
     
     def start(self):
         """Inicia o listener do Telegram em background"""
-        if not self.bot or self.is_running:
+        if not self.bot:
+            logger.warning("[TELEGRAM] Bot não inicializado, ignorando start().")
+            return
+            
+        if self.is_running:
+            logger.warning("[TELEGRAM] start() chamado novamente, ignorando (já iniciado).")
             return
             
         self.is_running = True
         self.thread = threading.Thread(target=self._run_polling, daemon=True)
         self.thread.start()
-        logger.info("🚀 Telegram Listener iniciado em background")
+        logger.info("🚀 [TELEGRAM] Bot iniciado (polling em background).")
         
     def _run_polling(self):
-        """Loop de polling"""
-        while self.is_running:
-            try:
-                logger.info("Iniciando polling do Telegram...")
-                self.bot.infinity_polling(timeout=10, long_polling_timeout=5)
-            except Exception as e:
-                logger.error(f"Erro no polling do Telegram: {e}")
-                time.sleep(5)
+        """Loop de polling - CHAMA INFINITY_POLLING APENAS UMA VEZ"""
+        try:
+            logger.info("[TELEGRAM] Iniciando infinity_polling...")
+            # skip_pending=True evita processar mensagens antigas ao reiniciar
+            self.bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro no polling: {e}")
+            self.is_running = False
                 
     def _setup_handlers(self):
         """Configura handlers de comandos"""
