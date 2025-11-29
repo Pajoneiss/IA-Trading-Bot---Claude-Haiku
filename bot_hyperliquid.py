@@ -1121,6 +1121,52 @@ class HyperliquidBot:
                 coin=symbol,
                 is_buy=(side == 'long'),
                 size=size,
+                price=current_price,
+                order_type="market",
+                leverage=leverage
+            )
+            
+            self.logger.info(f"✅ Ordem executada: {result}")
+            
+            # Verifica sucesso
+            if result.get('status') == 'ok':
+                self.logger.info(f"Posição adicionada: {symbol} {side.upper()}")
+                self.position_manager.add_position(
+                    symbol=symbol,
+                    side=side,
+                    entry_price=current_price,
+                    size=size,
+                    leverage=leverage,
+                    stop_loss_pct=stop_loss_pct,
+                    take_profit_pct=take_profit_pct,
+                    strategy='ai_autonomous'
+                )
+                
+                # 📱 Notifica via Telegram
+                self.telegram.notify_position_opened(
+                    symbol=symbol,
+                    side=side,
+                    entry_price=current_price,
+                    size=size,
+                    leverage=leverage,
+                    strategy=strategy,
+                    confidence=confidence,
+                    reason=reason,
+                    source=source
+                )
+
+            else:
+                self.logger.error(f"❌ Falha ao abrir posição: {result}")
+                
+        except Exception as e:
+            self.logger.error(f"❌ Erro crítico ao executar ordem: {e}", exc_info=True)
+            self.telegram.notify_error("Erro ao abrir posição", f"{symbol}: {str(e)}")
+    
+    def _execute_close(self, action: Dict[str, Any], prices: Dict[str, float]):
+        """Executa fechamento de posição"""
+        symbol = action['symbol']
+        reason = action.get('reason', 'unknown')
+        
         position = self.position_manager.get_position(symbol)
         if not position:
             self.logger.warning(f"{symbol}: Posição não encontrada no gerenciamento")
