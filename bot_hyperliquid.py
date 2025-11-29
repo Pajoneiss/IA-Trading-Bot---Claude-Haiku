@@ -864,11 +864,14 @@ class HyperliquidBot:
         confidence = decision.get('confidence', 0.0)
         strategy = decision.get('setup_name', style) # Usa setup_name ou style como estratégia
         
+        sl_str = f"{stop_loss_price:.2f}" if stop_loss_price else "N/A"
+        tp_str = f"{take_profit_price:.2f}" if take_profit_price else "N/A"
+
         self.logger.info(f"\n{'='*50}")
         self.logger.info(f"📈 ABRINDO {side.upper()} em {symbol}")
         self.logger.info(f"   Size: ${size_usd:.2f} | Leverage: {leverage}x")
-        self.logger.info(f"   SL: ${stop_loss_price:.2f if stop_loss_price else 'N/A'}")
-        self.logger.info(f"   TP: ${take_profit_price:.2f if take_profit_price else 'N/A'}")
+        self.logger.info(f"   SL: ${sl_str}")
+        self.logger.info(f"   TP: ${tp_str}")
         self.logger.info(f"   Motivo: {reason}")
         self.logger.info(f"{'='*50}")
         
@@ -1111,7 +1114,7 @@ def main():
         'anthropic_api_key': os.getenv('ANTHROPIC_API_KEY'),
         'ai_model': os.getenv('AI_MODEL', 'claude-3-5-haiku-20241022'),
         'openai_api_key': os.getenv('OPENAI_API_KEY'),
-        'openai_model_scalp': os.getenv('OPENAI_MODEL_SCALP', 'gpt-4o-mini'),
+        'openai_model_scalp': os.getenv('OPENAI_MODEL', 'gpt-4o-mini'),
         'live_trading': os.getenv('LIVE_TRADING', 'false').lower() == 'true',
         'risk_per_trade_pct': float(os.getenv('RISK_PER_TRADE_PCT', '2.0')),
         'max_daily_drawdown_pct': float(os.getenv('MAX_DAILY_DRAWDOWN_PCT', '10.0')),

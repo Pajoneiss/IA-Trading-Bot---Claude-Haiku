@@ -24,14 +24,26 @@ class TelegramInteractive:
     """
     Gerencia comandos e interações do Telegram.
     Roda em thread separada para não bloquear o bot principal.
+    Implementa Singleton para evitar múltiplas instâncias.
     """
+    _instance = None
+    
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(TelegramInteractive, cls).__new__(cls)
+        return cls._instance
     
     def __init__(self, main_bot, token: str):
+        # Evita re-inicialização se já foi inicializado
+        if hasattr(self, 'initialized') and self.initialized:
+            return
+            
         self.main_bot = main_bot
         self.token = token
         self.bot = None
         self.is_running = False
         self.thread = None
+        self.initialized = True
         
         if not TELEBOT_AVAILABLE:
             logger.warning("⚠️ pyTelegramBotAPI não instalado. Funcionalidades interativas desativadas.")
