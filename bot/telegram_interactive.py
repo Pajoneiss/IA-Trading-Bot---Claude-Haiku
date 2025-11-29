@@ -382,24 +382,23 @@ class TelegramInteractive:
     def _handle_force_scalp(self, chat_id):
         """Força um scalp imediato via comando Telegram"""
         try:
+            logger.info(f"[TELEGRAM] /force_scalp chamado por chat_id={chat_id}")
             result = self.main_bot.force_scalp_trade()
+            logger.info(f"[TELEGRAM] force_scalp_trade retornou: {result}")
             
             if result['status'] == 'hold':
-                self.bot.send_message(
-                    chat_id,
-                    f"🤚 **IA SCALP decidiu HOLD**\n\n{result['reason']}"
-                )
+                msg = f"🤚 *IA SCALP decidiu HOLD*\n\n{result['reason']}"
+                self.bot.send_message(chat_id, msg, parse_mode='Markdown')
             elif result['status'] == 'blocked':
-                self.bot.send_message(
-                    chat_id,
-                    f"⚠️ **SCALP FORÇADO BLOQUEADO PELO RISKMANAGER**\n\n"
+                msg = (
+                    f"⚠️ *SCALP FORÇADO BLOQUEADO PELO RISKMANAGER*\n\n"
                     f"Motivo: {result['reason']}"
                 )
+                self.bot.send_message(chat_id, msg, parse_mode='Markdown')
             elif result['status'] == 'executed':
                 dec = result['decision']
-                self.bot.send_message(
-                    chat_id,
-                    f"✅ **SCALP FORÇADO EXECUTADO**\n\n"
+                msg = (
+                    f"✅ *SCALP FORÇADO EXECUTADO*\n\n"
                     f"• Símbolo: {dec.get('symbol')}\n"
                     f"• Direção: {dec.get('side', '').upper()}\n"
                     f"• Tamanho: ${dec.get('size_usd', 0):.2f} (mínimo de teste)\n"
@@ -409,12 +408,11 @@ class TelegramInteractive:
                     f"• IA: OpenAI (SCALP)\n"
                     f"• Observação: operação de teste acionada via /force_scalp"
                 )
+                self.bot.send_message(chat_id, msg, parse_mode='Markdown')
             else:
-                self.bot.send_message(
-                    chat_id,
-                    f"❌ **Erro ao executar SCALP FORÇADO**\n\n{result.get('reason', 'Erro desconhecido')}"
-                )
+                msg = f"❌ *Erro ao executar SCALP FORÇADO*\n\n{result.get('reason', 'Erro desconhecido')}"
+                self.bot.send_message(chat_id, msg, parse_mode='Markdown')
                 
         except Exception as e:
-            logger.error(f"Erro em force_scalp: {e}", exc_info=True)
+            logger.error(f"Erro em _handle_force_scalp: {e}", exc_info=True)
             self.bot.send_message(chat_id, f"❌ Erro ao processar /force_scalp: {str(e)}")

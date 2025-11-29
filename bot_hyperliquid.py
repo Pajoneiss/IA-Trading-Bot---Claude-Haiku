@@ -561,17 +561,20 @@ class HyperliquidBot:
     
     def force_scalp_trade(self) -> Dict[str, Any]:
         """Força um scalp imediato via comando Telegram"""
-        self.logger.info("[AI] SCALP FORÇADO via Telegram - Iniciando...")
+        self.logger.info("[AI] FORCE_SCALP: iniciando...")
         
         try:
             # 1. Buscar snapshot de mercado
+            self.logger.info("[AI] FORCE_SCALP: buscando snapshot de mercado...")
             user_state = self.client.get_user_state()
             all_prices = self.client.get_all_mids()
             
             equity = float(user_state.get('account_value', 0))
             self.risk_manager.update_equity(equity)
+            self.logger.info(f"[AI] FORCE_SCALP: equity atual = ${equity:.2f}")
             
             # 2. Construir contextos de mercado
+            self.logger.info("[AI] FORCE_SCALP: construindo contextos de mercado...")
             market_contexts = []
             for pair in self.trading_pairs:
                 try:
@@ -589,12 +592,16 @@ class HyperliquidBot:
                     )
                     market_contexts.append(context)
                 except Exception as e:
-                    self.logger.error(f"{pair}: Erro ao construir contexto: {e}")
+                    self.logger.error(f"[AI] FORCE_SCALP: erro ao construir contexto para {pair}: {e}")
             
             if not market_contexts:
+                self.logger.warning("[AI] FORCE_SCALP: nenhum contexto de mercado disponível")
                 return {'status': 'error', 'reason': 'Nenhum contexto de mercado disponível'}
             
+            self.logger.info(f"[AI] FORCE_SCALP: {len(market_contexts)} contextos construídos")
+            
             # 3. Chamar motor SCALP
+            self.logger.info("[AI] FORCE_SCALP: consultando IA SCALP (OpenAI)...")
             account_info = {
                 'equity': equity,
                 'daily_pnl_pct': self.risk_manager.daily_drawdown_pct,
@@ -617,37 +624,43 @@ class HyperliquidBot:
             
             # 4. Processar decisão
             if not scalp_decisions:
+                self.logger.info("[AI] FORCE_SCALP: IA não retornou decisões")
                 return {'status': 'hold', 'reason': 'IA SCALP não retornou decisões'}
             
             # Pega primeira decisão
             decision = scalp_decisions[0]
+            self.logger.info(f"[AI] FORCE_SCALP: decisão recebida -> {decision}")
             
             if decision.get('action') == 'hold':
                 reason = decision.get('reason', 'Sem setup claro')
+                self.logger.info(f"[AI] FORCE_SCALP: HOLD detectado - {reason}")
                 return {'status': 'hold', 'reason': reason}
             
             # 5. Executar trade com risco reduzido (0.5x)
             if decision.get('action') == 'open':
-                self.logger.info(f"[AI] SCALP FORÇADO - Tentando executar: {decision.get('symbol')} {decision.get('side')}")
+                self.logger.info(f"[AI] FORCE_SCALP: trade detectado -> {decision.get('symbol')} {decision.get('side')}")
                 
                 # Aplicar multiplicador de risco para teste
                 decision['_force_scalp'] = True
                 
                 # Tentar executar
                 try:
+                    self.logger.info("[AI] FORCE_SCALP: executando trade...")
                     self._execute_open(decision, all_prices)
+                    self.logger.info("[AI] FORCE_SCALP: trade executado com sucesso")
                     return {
                         'status': 'executed',
                         'decision': decision
                     }
                 except Exception as e:
-                    self.logger.error(f"Erro ao executar scalp forçado: {e}")
+                    self.logger.error(f"[AI] FORCE_SCALP: bloqueado pelo RiskManager - {e}")
                     return {'status': 'blocked', 'reason': str(e)}
             
+            self.logger.warning(f"[AI] FORCE_SCALP: decisão não é de abertura - action={decision.get('action')}")
             return {'status': 'hold', 'reason': 'Decisão não é de abertura'}
             
         except Exception as e:
-            self.logger.error(f"Erro em force_scalp_trade: {e}", exc_info=True)
+            self.logger.error(f"[AI] FORCE_SCALP: erro fatal - {e}", exc_info=True)
             return {'status': 'error', 'reason': str(e)}
     
     def _run_iteration(self):
@@ -1108,52 +1121,6 @@ class HyperliquidBot:
                 coin=symbol,
                 is_buy=(side == 'long'),
                 size=size,
-                price=current_price,
-                order_type="market",
-                leverage=leverage
-            )
-            
-            self.logger.info(f"✅ Ordem executada: {result}")
-            
-            # Verifica sucesso
-            if result.get('status') == 'ok':
-                self.logger.info(f"Posição adicionada: {symbol} {side.upper()}")
-                self.position_manager.add_position(
-                    symbol=symbol,
-                    side=side,
-                    entry_price=current_price,
-                    size=size,
-                    leverage=leverage,
-                    stop_loss_pct=stop_loss_pct,
-                    take_profit_pct=take_profit_pct,
-                    strategy='ai_autonomous'
-                )
-                
-                # 📱 Notifica via Telegram
-                self.telegram.notify_position_opened(
-                    symbol=symbol,
-                    side=side,
-                    entry_price=current_price,
-                    size=size,
-                    leverage=leverage,
-                    strategy=strategy,
-                    confidence=confidence,
-                    reason=reason,
-                    source=source
-                )
-
-            else:
-                self.logger.error(f"❌ Falha ao abrir posição: {result}")
-                
-        except Exception as e:
-            self.logger.error(f"❌ Erro crítico ao executar ordem: {e}", exc_info=True)
-            self.telegram.notify_error("Erro ao abrir posição", f"{symbol}: {str(e)}")
-    
-    def _execute_close(self, action: Dict[str, Any], prices: Dict[str, float]):
-        """Executa fechamento de posição"""
-        symbol = action['symbol']
-        reason = action.get('reason', 'unknown')
-        
         position = self.position_manager.get_position(symbol)
         if not position:
             self.logger.warning(f"{symbol}: Posição não encontrada no gerenciamento")
