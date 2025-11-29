@@ -62,21 +62,45 @@ class OpenAiScalpEngine:
             
             decisions = self._parse_ai_response(response_text)
             
-            # Taggear decisões
+            # Taggear decisões e logar resultados
+            trade_count = 0
+            hold_count = 0
+            
             for dec in decisions:
                 dec['source'] = 'openai_scalp'
                 dec['style'] = 'scalp'
                 
-                if dec.get('action') != 'hold':
+                action = dec.get('action', 'hold')
+                
+                if action == 'hold':
+                    hold_count += 1
+                    reason = dec.get('reason', 'Sem setup claro')
+                    logger.info(f"🤚 [AI] IA SCALP decidiu HOLD: {reason}")
+                elif action == 'open':
+                    trade_count += 1
+                    symbol = dec.get('symbol', 'UNKNOWN')
+                    side = dec.get('side', '').upper()
+                    leverage = dec.get('leverage', 0)
+                    confidence = dec.get('confidence', 0)
+                    sl_price = dec.get('stop_loss_price', 0)
+                    tp_price = dec.get('take_profit_price', 0)
+                    
                     logger.info(
-                        f"⚡ SCALP ({dec.get('symbol')}): {dec.get('action')} {dec.get('side', '')} "
-                        f"| Conf: {dec.get('confidence', 0):.2f}"
+                        f"📊 [AI] IA SCALP decidiu TRADE: provider=openai style=scalp "
+                        f"action=OPEN_{side} symbol={symbol} leverage={leverage}x "
+                        f"sl_price={sl_price:.2f} tp_price={tp_price:.2f} confidence={confidence:.2f}"
                     )
+            
+            # Log resumo
+            if trade_count == 0 and hold_count == 0:
+                logger.info("ℹ️  [AI] IA SCALP não retornou decisões válidas")
+            elif trade_count > 0:
+                logger.info(f"✅ [AI] IA SCALP retornou {trade_count} trade(s) e {hold_count} hold(s)")
             
             return decisions
             
         except Exception as e:
-            logger.error(f"Erro ao consultar OpenAI: {e}")
+            logger.error(f"❌ [AI] Erro ao consultar IA SCALP (OpenAI): {e}", exc_info=True)
             return []
 
     def _build_scalp_prompt(self,
