@@ -147,13 +147,16 @@ ESTADO DA CONTA:
             price = ctx.get('price', 0)
             ind = ctx.get('indicators', {})
             
+            # Handle None funding_rate
+            funding_rate = ctx.get('funding_rate') or 0
+            
             prompt += f"""
 SYMBOL: {symbol}
 Price: {price}
 Trend: {ind.get('trend')} (Strength: {ind.get('trend_strength', 0):.2f})
 RSI: {ind.get('rsi', 50):.1f}
 Volatility: {ind.get('volatility_pct', 0):.2f}%
-Funding: {ctx.get('funding_rate', 0)*100:.4f}%
+Funding: {funding_rate*100:.4f}%
 """
             if ind.get('ema_9') and ind.get('ema_21'):
                  ema_cross = "BULLISH" if ind['ema_9'] > ind['ema_21'] else "BEARISH"
