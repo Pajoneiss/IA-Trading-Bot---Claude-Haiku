@@ -559,6 +559,97 @@ class HyperliquidBot:
         except Exception as e:
             self.logger.warning(f"Erro ao enviar resumo Telegram: {e}")
     
+    def force_scalp_trade(self) -> Dict[str, Any]:
+        """Força um scalp imediato via comando Telegram"""
+        self.logger.info("[AI] SCALP FORÇADO via Telegram - Iniciando...")
+        
+        try:
+            # 1. Buscar snapshot de mercado
+            user_state = self.client.get_user_state()
+            all_prices = self.client.get_all_mids()
+            
+            equity = float(user_state.get('account_value', 0))
+            self.risk_manager.update_equity(equity)
+            
+            # 2. Construir contextos de mercado
+            market_contexts = []
+            for pair in self.trading_pairs:
+                try:
+                    price = all_prices.get(pair)
+                    if not price:
+                        continue
+                    price = float(price)
+                    candles = self.client.get_candles(pair, interval="1h", limit=50)
+                    
+                    context = self.market_context.build_context_for_pair(
+                        symbol=pair,
+                        current_price=price,
+                        candles=candles,
+                        funding_rate=None
+                    )
+                    market_contexts.append(context)
+                except Exception as e:
+                    self.logger.error(f"{pair}: Erro ao construir contexto: {e}")
+            
+            if not market_contexts:
+                return {'status': 'error', 'reason': 'Nenhum contexto de mercado disponível'}
+            
+            # 3. Chamar motor SCALP
+            account_info = {
+                'equity': equity,
+                'daily_pnl_pct': self.risk_manager.daily_drawdown_pct,
+                'daily_drawdown_pct': self.risk_manager.daily_drawdown_pct
+            }
+            
+            risk_limits = {
+                'risk_per_trade_pct': self.risk_manager.risk_per_trade_pct,
+                'max_daily_drawdown_pct': self.risk_manager.max_daily_drawdown_pct,
+                'max_open_trades': self.risk_manager.max_open_trades,
+                'max_leverage': self.risk_manager.max_leverage
+            }
+            
+            scalp_decisions = self.ai_engine.scalp_engine.get_scalp_decision(
+                market_contexts=market_contexts,
+                account_info=account_info,
+                open_positions=self.position_manager.get_all_positions(),
+                risk_limits=risk_limits
+            )
+            
+            # 4. Processar decisão
+            if not scalp_decisions:
+                return {'status': 'hold', 'reason': 'IA SCALP não retornou decisões'}
+            
+            # Pega primeira decisão
+            decision = scalp_decisions[0]
+            
+            if decision.get('action') == 'hold':
+                reason = decision.get('reason', 'Sem setup claro')
+                return {'status': 'hold', 'reason': reason}
+            
+            # 5. Executar trade com risco reduzido (0.5x)
+            if decision.get('action') == 'open':
+                self.logger.info(f"[AI] SCALP FORÇADO - Tentando executar: {decision.get('symbol')} {decision.get('side')}")
+                
+                # Aplicar multiplicador de risco para teste
+                decision['_force_scalp'] = True
+                
+                # Tentar executar
+                try:
+                    self._execute_open(decision, all_prices)
+                    return {
+                        'status': 'executed',
+                        'decision': decision
+                    }
+                except Exception as e:
+                    self.logger.error(f"Erro ao executar scalp forçado: {e}")
+                    return {'status': 'blocked', 'reason': str(e)}
+            
+            return {'status': 'hold', 'reason': 'Decisão não é de abertura'}
+            
+        except Exception as e:
+            self.logger.error(f"Erro em force_scalp_trade: {e}", exc_info=True)
+            return {'status': 'error', 'reason': str(e)}
+    
     def _run_iteration(self):
         """Executa uma iteração completa do bot"""
         

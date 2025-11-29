@@ -133,6 +133,11 @@ class TelegramInteractive:
         def stop_trading(message):
             self.main_bot.paused = True
             self.bot.reply_to(message, "⏸️ **Trading PAUSADO!** O bot não abrirá novas posições (mas gerenciará as existentes).")
+        
+        @self.bot.message_handler(commands=['force_scalp'])
+        def force_scalp(message):
+            self.bot.reply_to(message, "⚡ Solicitando um scalp imediato via IA SCALP (OpenAI)...")
+            self._handle_force_scalp(message.chat.id)
 
         # Handler genérico para texto (Chat com IA se não for comando)
         @self.bot.message_handler(func=lambda message: True)
@@ -373,3 +378,43 @@ class TelegramInteractive:
         except Exception as e:
             logger.error(f"Erro no chat IA: {e}")
             self.bot.send_message(chat_id, "Desculpe, tive um erro ao processar sua pergunta.")
+    
+    def _handle_force_scalp(self, chat_id):
+        """Força um scalp imediato via comando Telegram"""
+        try:
+            result = self.main_bot.force_scalp_trade()
+            
+            if result['status'] == 'hold':
+                self.bot.send_message(
+                    chat_id,
+                    f"🤚 **IA SCALP decidiu HOLD**\n\n{result['reason']}"
+                )
+            elif result['status'] == 'blocked':
+                self.bot.send_message(
+                    chat_id,
+                    f"⚠️ **SCALP FORÇADO BLOQUEADO PELO RISKMANAGER**\n\n"
+                    f"Motivo: {result['reason']}"
+                )
+            elif result['status'] == 'executed':
+                dec = result['decision']
+                self.bot.send_message(
+                    chat_id,
+                    f"✅ **SCALP FORÇADO EXECUTADO**\n\n"
+                    f"• Símbolo: {dec.get('symbol')}\n"
+                    f"• Direção: {dec.get('side', '').upper()}\n"
+                    f"• Tamanho: ${dec.get('size_usd', 0):.2f} (mínimo de teste)\n"
+                    f"• Alavancagem: {dec.get('leverage', 0)}x\n"
+                    f"• SL: {dec.get('stop_loss_pct', 0):.2f}%\n"
+                    f"• TP: {dec.get('take_profit_pct', 0):.2f}%\n"
+                    f"• IA: OpenAI (SCALP)\n"
+                    f"• Observação: operação de teste acionada via /force_scalp"
+                )
+            else:
+                self.bot.send_message(
+                    chat_id,
+                    f"❌ **Erro ao executar SCALP FORÇADO**\n\n{result.get('reason', 'Erro desconhecido')}"
+                )
+                
+        except Exception as e:
+            logger.error(f"Erro em force_scalp: {e}", exc_info=True)
+            self.bot.send_message(chat_id, f"❌ Erro ao processar /force_scalp: {str(e)}")

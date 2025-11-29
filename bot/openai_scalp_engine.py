@@ -110,20 +110,24 @@ class OpenAiScalpEngine:
                             risk_limits: Dict[str, Any]) -> str:
         """Constrói prompt específico para SCALP"""
         
-        prompt = """Você é um motor de SCALP TRADING.
+        prompt = """Você é um motor de SCALP TRADING AGRESSIVO para TESTES.
 Seu objetivo é identificar oportunidades de CURTO PRAZO (5m, 15m, 1h).
 
 FOCO:
 - Movimentos rápidos de 1% a 2.5%.
-- Stop Loss APERTADO (0.5% a 1.5%).
-- Take Profit curto (1% a 2.5%).
-- Evitar operar em mercado lateral (chop) se não houver setup claro.
-- Se o mercado estiver neutro/morto, responda HOLD.
+- Stop Loss APERTADO (0.5% a 1.5%, preferencialmente <= 1.5%).
+- Take Profit curto (1% a 2.5%, preferencialmente <= 2.5%).
 
-REGRAS:
-1. Analise os dados de mercado fornecidos.
-2. Identifique setups de alta probabilidade (Breakouts, Reversões em suporte/resistência, Continuação de tendência).
-3. Retorne um JSON com suas decisões.
+ACEITE 3 TIPOS DE SETUP:
+1. SCALP DE TENDÊNCIA (trend-following): Entre a favor da tendência identificada.
+2. SCALP DE RANGE: Compre perto do suporte, venda perto da resistência.
+3. SCALP DE BREAKOUT: Entre logo após rompimento com volume.
+
+IMPORTANTE:
+- NÃO exija perfeição absoluta. Se o risco estiver aceitável (SL <= 1.5%), SUGIRA o trade.
+- Um RiskManager externo vai limitar tamanho, drawdown diário e min_notional. Você NÃO precisa controlar isso.
+- Evite overtrading: máximo 1-2 trades simultâneos por símbolo.
+- APENAS se o mercado estiver COMPLETAMENTE MORTO (volatilidade ridícula, sem range nem tendência), sugira HOLD.
 
 ESTADO DA CONTA:
 """
@@ -164,18 +168,18 @@ FORMATO DE RESPOSTA (JSON):
       "leverage": 10, 
       "stop_loss_price": 23.50, 
       "take_profit_price": 21.00,
-      "confidence": 0.85, "setup_name": "bear_flag_breakout",
+      "confidence": 0.85, "setup_name": "scalp_breakout",
       "reason": "Rompimento de suporte com volume"
     }
   ]
 }
 
-Se não houver trade: {"actions": [{"action": "hold", "reason": "..."}]}
+Se não houver trade: {"actions": [{"action": "hold", "reason": "Mercado completamente morto, sem volatilidade"}]}
 
 IMPORTANTE:
 - Calcule "stop_loss_price" e "take_profit_price" baseado no preço atual e nos percentuais alvo (SL 0.5-1.5%, TP 1-2.5%).
-- O RiskManager calculará o tamanho da posição, você só sugere a entrada e os parâmetros de saída.
-- NÃO force trades. Qualidade > Quantidade.
+- setup_name: use "scalp_trend", "scalp_range" ou "scalp_breakout".
+- NÃO force trades. Qualidade > Quantidade, mas seja MENOS seletivo que o normal para TESTES.
 """
         return prompt
 
