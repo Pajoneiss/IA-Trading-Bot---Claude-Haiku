@@ -117,7 +117,8 @@ class RiskManager:
     def calculate_position_size(self, 
                                 symbol: str, 
                                 entry_price: float,
-                                stop_loss_pct: float = 2.0) -> Optional[Dict[str, float]]:
+                                stop_loss_pct: float = 2.0,
+                                risk_multiplier: float = 1.0) -> Optional[Dict[str, float]]:
         """
         Calcula tamanho da posição baseado em risco
         
@@ -125,6 +126,7 @@ class RiskManager:
             symbol: Par a operar
             entry_price: Preço de entrada
             stop_loss_pct: % de stop loss (ex: 2.0 para -2%)
+            risk_multiplier: Multiplicador de risco (default 1.0). Use < 1.0 para reduzir risco (ex: scalp).
             
         Returns:
             Dict com size, notional, leverage ou None se não puder operar
@@ -153,7 +155,8 @@ class RiskManager:
             return None
         
         # Calcula quanto pode arriscar (em USDC)
-        risk_amount = (self.risk_per_trade_pct / 100) * self.current_equity
+        # Aplica multiplicador de risco aqui
+        risk_amount = (self.risk_per_trade_pct / 100) * self.current_equity * risk_multiplier
         
         # Calcula position size baseado no stop
         # risk_amount = position_size * entry_price * (stop_loss_pct / 100)

@@ -19,6 +19,7 @@ from eth_account.messages import encode_defunct
 # Importa módulos do bot
 from bot.risk_manager import RiskManager
 from bot.ai_decision import AiDecisionEngine
+from bot.dual_ai_engine import DualAiDecisionEngine
 from bot.position_manager import PositionManager
 from bot.market_context import MarketContext
 from bot.indicators import TechnicalIndicators
@@ -380,9 +381,11 @@ class HyperliquidBot:
             min_notional=config['min_notional']
         )
         
-        self.ai_engine = AiDecisionEngine(
-            api_key=config.get('anthropic_api_key'),
-            model=config.get('ai_model', 'claude-3-5-haiku-20241022')
+        self.ai_engine = DualAiDecisionEngine(
+            anthropic_key=config.get('anthropic_api_key'),
+            openai_key=config.get('openai_api_key'),
+            anthropic_model=config.get('ai_model', 'claude-3-5-haiku-20241022'),
+            openai_model=config.get('openai_model_scalp', 'gpt-4o-mini')
         )
         
         self.position_manager = PositionManager(
@@ -741,7 +744,8 @@ class HyperliquidBot:
         base_calc = self.risk_manager.calculate_position_size(
             symbol=symbol,
             entry_price=current_price,
-            stop_loss_pct=self.config['default_stop_pct']
+            stop_loss_pct=self.config['default_stop_pct'],
+            risk_multiplier=1.0 # Increase sempre usa risco base ou até menor? Vamos manter 1.0 por enquanto
         )
         
         if not base_calc:
@@ -843,12 +847,22 @@ class HyperliquidBot:
         symbol = decision['symbol']
         side = decision['side']
         reason = decision.get('reason', '')
+        style = decision.get('style', 'swing')
+        source = decision.get('source', 'unknown')
+        
+        # Define multiplicador de risco baseado no estilo
+        risk_multiplier = 1.0
+        if style == 'scalp':
+            risk_multiplier = 0.5
+            self.logger.info(f"⚡ SCALP DETECTADO: Aplicando multiplicador de risco {risk_multiplier}x")
         
         # ===== VALORES DECIDIDOS PELA IA =====
         size_usd = decision.get('size_usd', 20)  # IA decide quanto em USD
         leverage = decision.get('leverage', 5)   # IA decide leverage
         stop_loss_price = decision.get('stop_loss_price')  # IA decide SL
         take_profit_price = decision.get('take_profit_price')  # IA decide TP
+        confidence = decision.get('confidence', 0.0)
+        strategy = decision.get('setup_name', style) # Usa setup_name ou style como estratégia
         
         self.logger.info(f"\n{'='*50}")
         self.logger.info(f"📈 ABRINDO {side.upper()} em {symbol}")
@@ -966,8 +980,10 @@ class HyperliquidBot:
                     leverage=leverage,
                     strategy=strategy,
                     confidence=confidence,
-                    reason=comment
+                    reason=reason,
+                    source=source
                 )
+
             else:
                 self.logger.error(f"❌ Falha ao abrir posição: {result}")
                 
@@ -1094,6 +1110,8 @@ def main():
         'network': os.getenv('HYPERLIQUID_NETWORK', 'mainnet'),
         'anthropic_api_key': os.getenv('ANTHROPIC_API_KEY'),
         'ai_model': os.getenv('AI_MODEL', 'claude-3-5-haiku-20241022'),
+        'openai_api_key': os.getenv('OPENAI_API_KEY'),
+        'openai_model_scalp': os.getenv('OPENAI_MODEL_SCALP', 'gpt-4o-mini'),
         'live_trading': os.getenv('LIVE_TRADING', 'false').lower() == 'true',
         'risk_per_trade_pct': float(os.getenv('RISK_PER_TRADE_PCT', '2.0')),
         'max_daily_drawdown_pct': float(os.getenv('MAX_DAILY_DRAWDOWN_PCT', '10.0')),

@@ -122,7 +122,8 @@ class TelegramNotifier:
         leverage: int,
         strategy: str,
         confidence: float,
-        reason: str = ""
+        reason: str = "",
+        source: str = "claude_swing"
     ):
         """Notifica abertura de posição"""
         if not self.notify_on_open:
@@ -131,10 +132,16 @@ class TelegramNotifier:
         emoji = "🟢" if side.lower() == "long" else "🔴"
         side_text = "LONG 📈" if side.lower() == "long" else "SHORT 📉"
         
+        # Formata origem
+        source_display = "Claude (SWING)"
+        if "openai" in source.lower():
+            source_display = "OpenAI (SCALP)"
+        
         msg = (
             f"{emoji} *POSIÇÃO ABERTA*\n\n"
             f"*{symbol}* {side_text}\n"
             f"━━━━━━━━━━━━━━━\n"
+            f"🧠 Origem IA: `{source_display}`\n"
             f"💰 Entry: `${entry_price:,.4f}`\n"
             f"📦 Size: `{size:.4f}`\n"
             f"⚡ Leverage: `{leverage}x`\n"
