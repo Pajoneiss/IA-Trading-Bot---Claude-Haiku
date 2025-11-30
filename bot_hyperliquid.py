@@ -26,6 +26,7 @@ from bot.indicators import TechnicalIndicators
 from bot.trade_filter import TradeActionFilter
 from bot.telegram_notifier import TelegramNotifier
 from bot.telegram_interactive import TelegramInteractive
+from bot.scalp_filters import ScalpFilters
 
 
 # ==================== CONFIGURAÇÃO DE LOGGING ====================
@@ -640,12 +641,29 @@ class HyperliquidBot:
             if decision.get('action') == 'open':
                 self.logger.info(f"[AI] FORCE_SCALP: trade detectado -> {decision.get('symbol')} {decision.get('side')}")
                 
-                # Aplicar multiplicador de risco para teste
+                symbol = decision.get('symbol')
+                
+                # Aplicar filtro de volatilidade com candles
+                self.logger.info("[AI] FORCE_SCALP: aplicando filtros anti-overtrading...")
+                
+                # Busca candles para filtro de volatilidade
+                try:
+                    candles = self.client.get_candles(symbol, interval="1h", limit=20)
+                    can_trade, reason = self.ai_engine.scalp_engine.filters.check_volatility(candles, symbol)
+                    
+                    if not can_trade:
+                        self.logger.warning(f"[RISK] FORCE_SCALP bloqueado: {reason}")
+                        return {'status': 'blocked', 'reason': f"Filtro de volatilidade: {reason}"}
+                except Exception as e:
+                    self.logger.warning(f"[AI] FORCE_SCALP: erro ao verificar volatilidade: {e}")
+                
+                # Aplicar multiplicador de risco reduzido
+                decision['_risk_multiplier'] = 0.5
                 decision['_force_scalp'] = True
                 
                 # Tentar executar
                 try:
-                    self.logger.info("[AI] FORCE_SCALP: executando trade...")
+                    self.logger.info("[AI] FORCE_SCALP: filtros OK, executando trade...")
                     self._execute_open(decision, all_prices)
                     self.logger.info("[AI] FORCE_SCALP: trade executado com sucesso")
                     return {
@@ -1013,19 +1031,6 @@ class HyperliquidBot:
     def _execute_open(self, decision: Dict[str, Any], prices: Dict[str, float]):
         """Executa abertura de posição - USA VALORES DA IA"""
         symbol = decision['symbol']
-        side = decision['side']
-        reason = decision.get('reason', '')
-        style = decision.get('style', 'swing')
-        source = decision.get('source', 'unknown')
-        
-        # Define multiplicador de risco baseado no estilo
-        risk_multiplier = 1.0
-        if style == 'scalp':
-            risk_multiplier = 0.5
-            self.logger.info(f"⚡ SCALP DETECTADO: Aplicando multiplicador de risco {risk_multiplier}x")
-        
-        # ===== VALORES DECIDIDOS PELA IA =====
-        size_usd = decision.get('size_usd', 20)  # IA decide quanto em USD
         leverage = decision.get('leverage', 5)   # IA decide leverage
         stop_loss_price = decision.get('stop_loss_price')  # IA decide SL
         take_profit_price = decision.get('take_profit_price')  # IA decide TP

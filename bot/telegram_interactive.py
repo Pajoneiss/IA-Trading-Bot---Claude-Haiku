@@ -387,30 +387,51 @@ class TelegramInteractive:
             logger.info(f"[TELEGRAM] force_scalp_trade retornou: {result}")
             
             if result['status'] == 'hold':
-                msg = f"🤚 IA SCALP decidiu HOLD\n\n{result['reason']}"
+                msg = f"🤚 **IA SCALP decidiu HOLD**\n\n📋 Motivo: {result['reason']}"
                 self.bot.send_message(chat_id, msg)
+                
             elif result['status'] == 'blocked':
+                reason = result['reason']
+                
+                # Identifica tipo de bloqueio
+                if 'Filtro de volatilidade' in reason:
+                    emoji = "📊"
+                    title = "BLOQUEADO: Volatilidade Insuficiente"
+                elif 'Filtro SCALP' in reason:
+                    emoji = "🛡️"
+                    title = "BLOQUEADO: Filtro Anti-Overtrading"
+                else:
+                    emoji = "⚠️"
+                    title = "BLOQUEADO: RiskManager"
+                
                 msg = (
-                    f"⚠️ SCALP FORÇADO BLOQUEADO PELO RISKMANAGER\n\n"
-                    f"Motivo: {result['reason']}"
+                    f"{emoji} **{title}**\n\n"
+                    f"📋 Motivo: {reason}\n\n"
+                    f"💡 _O bot está protegendo sua banca de trades de baixa qualidade._"
                 )
                 self.bot.send_message(chat_id, msg)
+                
             elif result['status'] == 'executed':
                 dec = result['decision']
+                symbol = dec.get('symbol', 'UNKNOWN')
+                side = dec.get('side', '').upper()
+                tp_pct = dec.get('take_profit_pct', 0)
+                sl_pct = dec.get('stop_loss_pct', 0)
+                leverage = dec.get('leverage', 0)
+                
                 msg = (
-                    f"✅ SCALP FORÇADO EXECUTADO\n\n"
-                    f"• Símbolo: {dec.get('symbol')}\n"
-                    f"• Direção: {dec.get('side', '').upper()}\n"
-                    f"• Tamanho: ${dec.get('size_usd', 0):.2f} (mínimo de teste)\n"
-                    f"• Alavancagem: {dec.get('leverage', 0)}x\n"
-                    f"• SL: {dec.get('stop_loss_pct', 0):.2f}%\n"
-                    f"• TP: {dec.get('take_profit_pct', 0):.2f}%\n"
-                    f"• IA: OpenAI (SCALP)\n"
-                    f"• Observação: operação de teste acionada via /force_scalp"
+                    f"✅ **SCALP FORÇADO EXECUTADO**\n\n"
+                    f"📊 **{symbol}** {side}\n"
+                    f"🎯 TP: `{tp_pct:.2f}%` | SL: `{sl_pct:.2f}%`\n"
+                    f"⚡ Leverage: `{leverage}x`\n"
+                    f"🤖 IA: OpenAI (SCALP)\n"
+                    f"💰 Risco: 50% do normal (teste)\n\n"
+                    f"_Operação acionada via /force_scalp_"
                 )
                 self.bot.send_message(chat_id, msg)
+                
             else:
-                msg = f"❌ Erro ao executar SCALP FORÇADO\n\n{result.get('reason', 'Erro desconhecido')}"
+                msg = f"❌ **Erro ao executar SCALP**\n\n{result.get('reason', 'Erro desconhecido')}"
                 self.bot.send_message(chat_id, msg)
                 
         except Exception as e:
