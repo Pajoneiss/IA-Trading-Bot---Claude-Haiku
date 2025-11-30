@@ -1038,20 +1038,17 @@ class HyperliquidBot:
         stop_loss_price = decision.get('stop_loss_price')  # IA decide SL
         take_profit_price = decision.get('take_profit_price')  # IA decide TP
         confidence = decision.get('confidence', 0.0)
-        # Usa setup_name ou style como estratégia, com fallback para "unknown"
-        strategy = decision.get('setup_name') or decision.get('style') or 'unknown'
-        source = decision.get('source', 'unknown')
-        
-        sl_str = f"{stop_loss_price:.2f}" if stop_loss_price else "N/A"
-        tp_str = f"{take_profit_price:.2f}" if take_profit_price else "N/A"
+        strategy = decision.get("setup_name") or decision.get("style") or "unknown"
+        source = decision.get("source", "unknown")
 
-        self.logger.info(f"\n{'='*50}")
-        self.logger.info(f"📈 ABRINDO {side.upper()} em {symbol}")
-        self.logger.info(f"   Size: ${size_usd:.2f} | Leverage: {leverage}x")
-        self.logger.info(f"   SL: ${sl_str}")
-        self.logger.info(f"   TP: ${tp_str}")
-        self.logger.info(f"   Motivo: {reason}")
-        self.logger.info(f"{'='*50}")
+        sl_str = f"{stop_loss_price:.2f}" if stop_loss_price is not None else "N/A"
+        tp_str = f"{take_profit_price:.2f}" if take_profit_price is not None else "N/A"
+
+        self.logger.info(
+            f"[EXECUTE_OPEN] symbol={symbol} side={side} size_usd={size_usd} "
+            f"lev={leverage} SL=${sl_str} TP=${tp_str} conf={confidence:.2f} "
+            f"strategy={strategy} source={source} reason={reason}"
+        )
         
         # Verifica se já tem posição
         if self.position_manager.has_position(symbol):

@@ -114,6 +114,36 @@ REGRAS DE SOBREVIVÊNCIA (únicas regras fixas):
 4. Considere o funding rate antes de abrir posição
 5. Se uma posição está perdendo muito (>5%), considere fechar
 
+CÁLCULO DE CONFIANÇA (confidence):
+Você DEVE incluir um campo "confidence" (0.0 a 1.0) em todas as decisões.
+Use esta lógica para calcular:
+
+• Base inicial: 0.3 (30%)
+
+• EMAs (tendência):
+  - Todas alinhadas a favor: +0.2
+  - Parcialmente favoráveis: +0.1
+  - Mistas/Neutras: +0.0
+
+• RSI:
+  - Favorável (ex: 35-45 em suporte para LONG): +0.15
+  - Neutro: +0.0
+  - Contra: -0.1 a -0.2
+
+• Volatilidade/Contexto:
+  - Saudável com liquidez: +0.1
+  - Muito baixa (parado): -0.1
+  - Caos/Wicks enormes: -0.05
+
+• Qualidade do Setup:
+  - Confluência clara: Ajustar até 0.8-0.9
+  - Especulativo/Contra-tendência: Máximo 0.5-0.6
+
+LIMITES:
+- Mínimo 0.1 para trades (OPEN)
+- Máximo 0.95
+- Para HOLD: 0.4 (neutro/perigoso) a 0.8 (hold convicto)
+
 """
         
         # Estado da conta
@@ -202,7 +232,8 @@ Retorne APENAS um JSON válido (sem texto antes ou depois):
       "leverage": 10,
       "stop_loss_price": 94500.0,
       "take_profit_price": 98000.0,
-      "reason": "Tendência alta, RSI saudável, bom R:R"
+      "reason": "Tendência alta, RSI saudável, bom R:R",
+      "confidence": 0.85
     }
   ]
 }
@@ -219,7 +250,8 @@ Se não quiser operar:
   "actions": [
     {
       "action": "hold",
-      "reason": "Mercado indefinido, aguardando melhor setup"
+      "reason": "Mercado indefinido, aguardando melhor setup",
+      "confidence": 0.4
     }
   ]
 }

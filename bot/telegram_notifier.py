@@ -136,6 +136,11 @@ class TelegramNotifier:
         source_display = "Claude (SWING)"
         if "openai" in source.lower():
             source_display = "OpenAI (SCALP)"
+            
+        # Formata confiança
+        conf_display = "N/A"
+        if confidence is not None:
+             conf_display = f"{int(confidence * 100)}%"
         
         msg = (
             f"{emoji} *POSIÇÃO ABERTA*\n\n"
@@ -146,7 +151,7 @@ class TelegramNotifier:
             f"📦 Size: `{size:.4f}`\n"
             f"⚡ Leverage: `{leverage}x`\n"
             f"🎯 Estratégia: `{strategy.upper()}`\n"
-            f"📊 Confiança: `{confidence*100:.0f}%`\n"
+            f"📊 Confiança: `{conf_display}`\n"
         )
         
         if reason:
