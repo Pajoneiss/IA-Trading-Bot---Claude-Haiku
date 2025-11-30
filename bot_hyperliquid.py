@@ -1031,11 +1031,16 @@ class HyperliquidBot:
     def _execute_open(self, decision: Dict[str, Any], prices: Dict[str, float]):
         """Executa abertura de posição - USA VALORES DA IA"""
         symbol = decision['symbol']
+        side = decision.get('side', 'long')
+        size_usd = decision.get('size_usd', 20)
+        reason = decision.get('reason', 'AI decision')
         leverage = decision.get('leverage', 5)   # IA decide leverage
         stop_loss_price = decision.get('stop_loss_price')  # IA decide SL
         take_profit_price = decision.get('take_profit_price')  # IA decide TP
         confidence = decision.get('confidence', 0.0)
-        strategy = decision.get('setup_name', style) # Usa setup_name ou style como estratégia
+        # Usa setup_name ou style como estratégia, com fallback para "unknown"
+        strategy = decision.get('setup_name') or decision.get('style') or 'unknown'
+        source = decision.get('source', 'unknown')
         
         sl_str = f"{stop_loss_price:.2f}" if stop_loss_price else "N/A"
         tp_str = f"{take_profit_price:.2f}" if take_profit_price else "N/A"
