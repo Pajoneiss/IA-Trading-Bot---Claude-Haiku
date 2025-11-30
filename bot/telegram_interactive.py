@@ -226,7 +226,7 @@ class TelegramInteractive:
             self.bot.send_message(chat_id, f"Erro ao obter status: {e}")
 
     def _send_positions(self, chat_id):
-        """Envia posições abertas"""
+        """Envia posições abertas agrupadas por estratégia"""
         try:
             # Precisa buscar preços atuais para PnL preciso
             try:
@@ -239,22 +239,48 @@ class TelegramInteractive:
             if not positions:
                 self.bot.send_message(chat_id, "🤷‍♂️ Nenhuma posição aberta no momento.")
                 return
-                
-            msg = "📈 **POSIÇÕES ABERTAS**\n\n"
+            
+            # Agrupa por estratégia
+            swing_pos = []
+            scalp_pos = []
+            other_pos = []
+            
             for pos in positions:
-                symbol = pos['symbol']
-                side = pos['side'].upper()
-                entry = pos['entry_price']
-                pnl = pos.get('unrealized_pnl_pct', 0)
+                # Tenta identificar estratégia
+                # O PositionManager retorna dicts, então acessamos chaves
+                strategy = pos.get('strategy', 'unknown').lower()
+                source = pos.get('source', 'unknown').lower()
                 
-                emoji = "🟢" if pnl > 0 else "🔴"
-                
-                msg += (
-                    f"{emoji} **{symbol}** {side}\n"
-                    f"Entry: `${entry:.4f}`\n"
-                    f"PnL: `{pnl:+.2f}%`\n"
-                    f"────────────────\n"
-                )
+                if 'swing' in strategy or 'claude' in source:
+                    swing_pos.append(pos)
+                elif 'scalp' in strategy or 'openai' in source:
+                    scalp_pos.append(pos)
+                else:
+                    other_pos.append(pos)
+            
+            msg = "📈 **POSIÇÕES ABERTAS**\n"
+            
+            def format_pos_list(pos_list, title):
+                if not pos_list:
+                    return ""
+                text = f"\n🔹 **{title}**\n"
+                for p in pos_list:
+                    symbol = p['symbol']
+                    side = p['side'].upper()
+                    entry = p['entry_price']
+                    pnl = p.get('unrealized_pnl_pct', 0)
+                    lev = p.get('leverage', 1)
+                    
+                    emoji = "🟢" if pnl > 0 else "🔴"
+                    text += (
+                        f"{emoji} `{symbol}` {side} {lev}x\n"
+                        f"   Entry: ${entry:.4f} | PnL: {pnl:+.2f}%\n"
+                    )
+                return text
+
+            msg += format_pos_list(swing_pos, "SWING (Claude)")
+            msg += format_pos_list(scalp_pos, "SCALP (OpenAI)")
+            msg += format_pos_list(other_pos, "OUTROS")
             
             self.bot.send_message(chat_id, msg)
         except Exception as e:
