@@ -1,3 +1,4 @@
+
 """
 OpenAI Scalp Engine
 Motor de decisão focado em SCALP usando OpenAI (GPT-4o-mini).
@@ -184,70 +185,129 @@ class OpenAiScalpEngine:
                             account_info: Dict[str, Any],
                             open_positions: List[Dict[str, Any]],
                             risk_limits: Dict[str, Any]) -> str:
-        """Constrói prompt específico para SCALP com foco em qualidade e fees"""
+        """Constrói prompt para IA SCALP (OpenAI) com persona Trader Virtual Chefe"""
         
-        prompt = """Você é um motor de SCALP TRADING INTELIGENTE para Hyperliquid.
-Seu objetivo é identificar oportunidades de CURTO PRAZO (1h, 4h) com ALTA PROBABILIDADE.
+        prompt = """Você é o TRADER VIRTUAL CHEFE de um bot de trading na Hyperliquid.
 
-⚠️ REGRAS CRÍTICAS SOBRE FEES:
-- Hyperliquid cobra ~0.02% maker + 0.05% taker = 0.07% por operação
-- Ida + volta = ~0.15% de custo total
-- Spread adiciona ~0.05-0.10%
-- CUSTO REAL TOTAL: ~0.20-0.25% por trade completo
+O código em volta de você cuida de:
+- conectar na exchange,
+- buscar preços, indicadores e notícias,
+- aplicar limites de risco (tamanho máximo, DD diário, alavancagem, margem),
+- enviar/fechar ordens.
 
-🎯 FOCO PRINCIPAL:
-- Movimentos de 1.0% a 2.5% (MÍNIMO 1.0% para cobrir fees com margem)
-- Stop Loss: 0.8% a 1.5% (apertado mas realista)
-- Take Profit: MÍNIMO 0.8%, ideal 1.2-2.0%
-- Risk/Reward: MÍNIMO 1.5:1, ideal 2:1 ou melhor
+VOCÊ cuida da parte mais importante: DECIDIR O QUE FAZER.
 
-📊 VOLATILIDADE É ESSENCIAL:
-- SÓ opere se o ativo tiver volatilidade >= 0.7% (range médio)
-- Mercado lateral estreito = HOLD (fees comem o lucro)
-- Prefira ativos com movimento claro e volume
+Sempre que for chamado, você recebe um contexto já mastigado em texto + números.
 
-✅ SETUPS ACEITOS:
-1. SCALP DE TENDÊNCIA: Entre a favor de tendência forte com pullback
-2. SCALP DE BREAKOUT: Rompimento com volume acima da média
-3. SCALP DE REVERSÃO: Apenas em extremos (RSI <25 ou >75)
+Seu objetivo é agir como um trader profissional, autônomo, 24h, MAXIMIZANDO resultado de longo prazo e MINIMIZANDO risco desnecessário. Seja conservador em relação ao risco e seletivo nas entradas. Prefira NÃO operar (action="hold") a fazer um trade ruim.
 
-❌ EVITE OVERTRADING:
-- Máximo 1 posição SCALP por símbolo
-- Se já tiver posição aberta no símbolo, sugira HOLD
-- Qualidade >> Quantidade
-- HOLD é MELHOR que trade marginal
+────────────────────────────────
+REGRAS GLOBAIS
+────────────────────────────────
+1. Nunca quebre as regras de risco informadas no contexto.
+2. Sempre respeite a direção do REGIME MACRO:
+   - Se 1D e 4H estiverem claramente bearish, prefira operar SHORT.
+   - Se 1D e 4H estiverem claramente bullish, prefira operar LONG.
+   - Evite operar contra-tendência macro; só considere contra-tendência se o contexto pedir explicitamente.
+3. Sempre considere MULTI-TIMEFRAME (1D, 4H, 1H, 15m).
+4. Evite entrar no meio de um candle explosivo já esticado. Prefira esperar pullback.
+5. Nunca abra posição diretamente contra uma posição já aberta no MESMO símbolo.
+6. Sempre explique no campo "reason" o PORQUÊ da sua decisão.
+7. Se o contexto estiver confuso, contraditório ou sem sinal claro, devolva HOLD.
 
-🚫 QUANDO SUGERIR HOLD:
-- Volatilidade < 0.7%
-- Mercado lateral sem direção clara
-- TP potencial < 0.8% (não cobre fees)
-- Já existe posição SCALP no símbolo
-- Setup não tem confiança >= 75%
+────────────────────────────────
+MODO SCALP (OpenAI) – TRADER DE CURTO PRAZO
+────────────────────────────────
+Este modo busca movimentos rápidos (minutos/horas). Use fortemente 15m/5m, com 1H e 4H como contexto.
 
-ESTADO DA CONTA:
+Quando estiver em MODO SCALP:
+- Sempre opere PRIORITARIAMENTE a favor da tendência de 1H e 4H.
+- Em dumps/pumps fortes, você PODE entrar mais cedo, desde que seja a favor do regime macro e use stops curtos.
+- Evite abrir scalp em períodos de liquidez muito baixa ou consolidações travadas.
+- Não opere SCALP contra uma posição SWING no mesmo símbolo.
+- SL e TP:
+  - Stops mais apertados, alvos menores (movimentos de 0.3% a 2%).
+  - Prefira poucos scalps de alta qualidade a muitos trades medianos.
+- Use muito bem estrutura de mercado no 15m/5m, zonas de liquidez e rejeições.
+
+────────────────────────────────
+FORMATO DA RESPOSTA (OBRIGATÓRIO)
+────────────────────────────────
+Você SEMPRE deve responder com UM ÚNICO JSON VÁLIDO, SEM texto extra, SEM comentários, SEM markdown.
+
+Campos obrigatórios:
+
+{
+  "action": "hold" | "open_long" | "open_short" | "close" | "manage",
+  "symbol": "TICKER_DO_ATIVO_OU_NULL_SE_HOLD",
+  "side": "long" | "short" | null,
+  "size_usd": NÚMERO_EM_USD_OU_0_SE_NÃO_FOR_ABRIR_NADA,
+  "leverage": NÚMERO_INTEIRO_OU_DECIMAL (ex: 5, 10, 15),
+  "stop_loss_price": PREÇO_NUMÉRICO_OU_NULL,
+  "take_profit_price": PREÇO_NUMÉRICO_OU_NULL,
+  "confidence": VALOR_DE_0_A_1 (ex: 0.65),
+  "setup_name": "nome_curto_do_setup",
+  "style": "scalp",
+  "reason": "explicação em português, 1-3 frases",
+  "source": "openai_scalp"
+}
+
+Regras JSON:
+- Se não quiser operar: "action": "hold", "symbol": null, "size_usd": 0.
+- "style" deve ser SEMPRE "scalp".
+- "source" deve ser SEMPRE "openai_scalp".
+
 """
-        prompt += f"Equity: ${account_info.get('equity', 0):.2f}\n"
-        prompt += f"PnL Dia: {account_info.get('daily_pnl_pct', 0):.2f}%\n\n"
         
-        prompt += "POSIÇÕES ABERTAS:\n"
+        # Estado da conta
+        prompt += f"""
+══════════════════════════════════════════
+ESTADO DA CONTA
+══════════════════════════════════════════
+Equity Total: ${account_info.get('equity', 0):.2f}
+PnL do Dia: {account_info.get('daily_pnl_pct', 0):.2f}%
+Risco Máx/Trade: {risk_limits.get('risk_per_trade_pct', 2.0)}%
+"""
+        
+        # Posições abertas
+        prompt += "══════════════════════════════════════════\n"
+        prompt += "POSIÇÕES ABERTAS\n"
+        prompt += "══════════════════════════════════════════\n"
+        
         scalp_positions = {}
         if open_positions:
             for pos in open_positions:
-                symbol = pos.get('symbol')
-                style = pos.get('style', 'unknown')
-                prompt += f"- {symbol} {pos.get('side')} [{style}] (PnL: {pos.get('unrealized_pnl_pct', 0):.2f}%)\n"
-                if style == 'scalp':
+                symbol = pos.get('symbol', 'N/A')
+                side = pos.get('side', 'N/A')
+                entry = pos.get('entry_price', 0)
+                size = pos.get('size', 0)
+                pnl_pct = pos.get('unrealized_pnl_pct', 0)
+                leverage = pos.get('leverage', 1)
+                strategy = pos.get('strategy', 'unknown')
+                
+                prompt += f"""
+{symbol} - {side.upper()} ({strategy})
+  Entry: ${entry:.4f}
+  Size: {size:.4f}
+  PnL: {pnl_pct:+.2f}%
+  Leverage: {leverage}x
+"""
+                if 'scalp' in strategy.lower():
                     scalp_positions[symbol] = True
         else:
-            prompt += "Nenhuma.\n"
-        
+            prompt += "\nNenhuma posição aberta.\n"
+            
         if scalp_positions:
             prompt += f"\n⚠️ ATENÇÃO: Símbolos com posição SCALP aberta: {', '.join(scalp_positions.keys())}\n"
             prompt += "NÃO abra nova posição SCALP nesses símbolos!\n"
-            
-        prompt += "\nDADOS DE MERCADO:\n"
+        
+        # Dados de mercado
+        prompt += "\n══════════════════════════════════════════\n"
+        prompt += "DADOS DE MERCADO (SCALP CONTEXT - 15m/5m Focus)\n"
+        prompt += "══════════════════════════════════════════\n"
+        
         for ctx in market_contexts:
-            symbol = ctx.get('symbol')
+            symbol = ctx.get('symbol', 'N/A')
             price = ctx.get('price', 0)
             ind = ctx.get('indicators', {})
             trend = ctx.get('trend', {})
@@ -255,16 +315,14 @@ ESTADO DA CONTA:
             volatility = ind.get('volatility_pct', 0)
             rsi = ind.get('rsi', 50)
             
-            # Marca símbolos com baixa volatilidade
             vol_warning = " ⚠️ BAIXA VOLATILIDADE" if volatility < 0.7 else ""
             
             prompt += f"""
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SYMBOL: {symbol}{vol_warning}
-Preço: ${price}
-Tendência: {trend.get('direction', 'neutral').upper()} (Força: {trend.get('strength', 0):.2f})
-RSI: {rsi:.1f}
-Volatilidade: {volatility:.2f}%
+📊 {symbol}{vol_warning}
+   Preço: ${price:,.4f}
+   Tendência: {trend.get('direction', 'neutral').upper()} (Força: {trend.get('strength', 0):.2f})
+   RSI: {rsi:.1f}
+   Volatilidade: {volatility:.2f}%
 """
             
             if ind.get('ema_9') and ind.get('ema_21'):
@@ -272,73 +330,94 @@ Volatilidade: {volatility:.2f}%
                 ema_21 = ind['ema_21']
                 ema_cross = "BULLISH ↗" if ema_9 > ema_21 else "BEARISH ↘"
                 ema_distance = abs((ema_9 - ema_21) / ema_21) * 100
-                prompt += f"EMAs: 9=${ema_9:.2f} vs 21=${ema_21:.2f} → {ema_cross} (dist: {ema_distance:.2f}%)\n"
+                prompt += f"   EMAs: 9=${ema_9:.2f} vs 21=${ema_21:.2f} → {ema_cross} (dist: {ema_distance:.2f}%)\n"
             
             if ctx.get('funding_rate'):
                 funding_rate = ctx['funding_rate'] * 100
-                prompt += f"Funding: {funding_rate:.4f}%\n"
+                prompt += f"   Funding: {funding_rate:.4f}%\n"
 
-        prompt += """
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-FORMATO DE RESPOSTA (JSON):
-{
-  "actions": [
-    {
-      "action": "open",
-      "symbol": "BTC",
-      "side": "long",
-      "leverage": 15,
-      "stop_loss_pct": 1.2,
-      "take_profit_pct": 1.8,
-      "confidence": 0.82,
-      "setup_name": "scalp_trend",
-      "reason": "Tendência bullish forte, RSI saudável, volatilidade boa (1.2%), R/R 1.5:1"
-    }
-  ]
-}
-
-Se NÃO houver setup válido:
-{"actions": [{"action": "hold", "reason": "Volatilidade insuficiente em todos os pares"}]}
-
-IMPORTANTE:
-- Use "stop_loss_pct" e "take_profit_pct" (valores POSITIVOS em %)
-- setup_name: "scalp_trend", "scalp_breakout" ou "scalp_reversal"
-- confidence: mínimo 0.75 para sugerir trade
-- reason: SEMPRE mencione volatilidade e R/R ratio
-- Leverage: 10-20x para scalp (será ajustado pelo RiskManager)
-- HOLD é uma resposta VÁLIDA e INTELIGENTE quando não há setup claro!
-"""
+        prompt += "\nRESPONDA APENAS COM O JSON VÁLIDO:"
+        
         return prompt
 
     def _parse_ai_response(self, response_text: str) -> List[Dict[str, Any]]:
-        """Parse da resposta JSON"""
+        """Parse da resposta JSON (suporta formato antigo e novo)"""
         try:
-            data = json.loads(response_text)
-            actions = data.get('actions', [])
+            # Limpa markdown
+            text = response_text.strip()
+            if text.startswith("```json"):
+                text = text[7:]
+            if text.startswith("```"):
+                text = text[3:]
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
+            
+            data = json.loads(text)
+            
+            # Normaliza para lista de ações
+            actions = []
+            if isinstance(data, list):
+                actions = data
+            elif isinstance(data, dict):
+                if 'actions' in data:
+                    actions = data['actions']
+                else:
+                    # Formato novo: objeto único
+                    actions = [data]
             
             valid_actions = []
             for action in actions:
-                # Normaliza campos
-                if action.get('action') == 'open':
-                    # Converte pcts para preços se necessário, ou deixa o bot calcular
-                    # O bot atual espera stop_loss_price e take_profit_price no 'open'
-                    # Mas o prompt pede pct. Vamos converter se possível ou deixar o RiskManager lidar?
-                    # O AiDecisionEngine original retorna stop_loss_price EXATO.
-                    # O prompt de scalp pede pct. Vamos adaptar aqui.
-                    
-                    # Precisamos do preço atual para converter pct em preço
-                    # Mas aqui no parse não temos o preço fácil.
-                    # Melhor mudar o prompt para retornar PREÇO ou ajustar aqui depois.
-                    # Vamos manter o padrão do bot: retornar stop_loss_price e take_profit_price.
-                    # Vou ajustar o prompt para pedir PREÇO EXATO também, ou calcular aqui se tivermos o preço no contexto.
-                    # Como não tenho o preço aqui fácil (teria que passar o contexto pro parse),
-                    # vou pedir pro prompt retornar PREÇOS EXATOS também, ou melhor:
-                    # O bot original (AiDecisionEngine) pede PREÇO EXATO.
-                    # Vou ajustar o prompt do Scalp para pedir PREÇO EXATO também, é mais seguro.
-                    pass
+                act_type = action.get('action', 'hold')
                 
-                valid_actions.append(action)
+                # Hold - apenas loga
+                if act_type == 'hold':
+                    logger.info(f"🤚 IA decidiu HOLD: {action.get('reason', 'sem motivo')}")
+                    # Mantém o hold para contagem de estatísticas
+                    valid_actions.append(action)
+                    continue
+                
+                # Open - valida campos obrigatórios
+                if act_type in ('open', 'open_long', 'open_short'):
+                    # Normaliza action para 'open' e define side se vier no action
+                    if act_type == 'open_long':
+                        action['action'] = 'open'
+                        action['side'] = 'long'
+                    elif act_type == 'open_short':
+                        action['action'] = 'open'
+                        action['side'] = 'short'
+                        
+                    if not all([
+                        action.get('symbol'),
+                        action.get('side'),
+                        # Scalp pode não ter size_usd definido se for calculado por risco
+                        # Mas o prompt pede size_usd ou 0. Vamos aceitar se tiver leverage.
+                    ]):
+                        logger.warning(f"Ação 'open' incompleta, ignorando: {action}")
+                        continue
+                    
+                    # Defaults para campos opcionais
+                    if not action.get('leverage'):
+                        action['leverage'] = 10 # Default maior para scalp
+                    
+                    # Garante limites
+                    action['leverage'] = max(1, min(50, int(float(action['leverage']))))
+                    
+                    valid_actions.append(action)
+                
+                # Close/Manage
+                elif act_type in ('close', 'manage'):
+                    if not action.get('symbol'):
+                        continue
+                    valid_actions.append(action)
+            
             return valid_actions
-        except Exception:
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Erro ao fazer parse do JSON da IA: {e}")
+            logger.debug(f"Resposta problemática: {response_text[:500]}")
             return []
+        except Exception as e:
+            logger.error(f"Erro inesperado ao processar resposta IA: {e}")
+            return []
+
