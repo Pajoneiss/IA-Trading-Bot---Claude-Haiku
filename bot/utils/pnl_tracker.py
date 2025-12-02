@@ -99,11 +99,10 @@ class PnLTracker:
         TODO: Implementar baseado no histórico real do bot
         Por enquanto, retorna mock data
         """
-        # Aqui você deve buscar do histórico real
-        # Por exemplo, de um banco de dados ou arquivo de log
-        
-        # Mock data para demonstração
-        return []
+        return [
+            t for t in self.trade_history 
+            if start <= t['closed_at'] <= end
+        ]
     
     def _get_open_positions_pnl(self) -> Dict:
         """

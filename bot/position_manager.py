@@ -68,6 +68,18 @@ class Position:
             return ((current_price - self.entry_price) / self.entry_price) * 100
         else:  # short
             return ((self.entry_price - current_price) / self.entry_price) * 100
+
+    def get_unrealized_pnl_usd(self, current_price: float) -> float:
+        """Calcula PnL não realizado em USD"""
+        try:
+            current_price = float(current_price)
+        except (ValueError, TypeError):
+            return 0.0
+            
+        if self.side == 'long':
+            return (current_price - self.entry_price) * self.size
+        else:  # short
+            return (self.entry_price - current_price) * self.size
     
     def to_dict(self) -> Dict[str, Any]:
         """Converte para dict"""
@@ -299,8 +311,10 @@ class PositionManager:
                     current_price = pos.entry_price
                     
                 pos_dict['unrealized_pnl_pct'] = pos.get_unrealized_pnl_pct(current_price)
+                pos_dict['unrealized_pnl'] = pos.get_unrealized_pnl_usd(current_price)
             else:
                 pos_dict['unrealized_pnl_pct'] = 0.0
+                pos_dict['unrealized_pnl'] = 0.0
                 
             positions_list.append(pos_dict)
             
