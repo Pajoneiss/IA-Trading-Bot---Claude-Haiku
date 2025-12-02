@@ -116,11 +116,11 @@ class AiDecisionEngine:
             
             valid_actions = []
             for action in actions:
-                act_type = action.get('action', 'hold')
+                act_type = action.get('action', 'skip')
                 
-                # Hold - apenas loga
-                if act_type == 'hold':
-                    logger.info(f"🤚 IA decidiu HOLD: {action.get('reason', 'sem motivo')}")
+                # Hold/Skip - apenas loga
+                if act_type in ('hold', 'skip'):
+                    logger.info(f"🤚 IA decidiu SKIP/HOLD: {action.get('reason', 'sem motivo')}")
                     continue
                 
                 # Open - valida campos obrigatórios
@@ -236,3 +236,245 @@ class AiDecisionEngine:
                 })
         
         return actions
+
+    def _build_prompt(self,
+                      market_contexts: List[Dict[str, Any]],
+                      account_info: Dict[str, Any],
+                      open_positions: List[Dict[str, Any]],
+                      risk_limits: Dict[str, Any]) -> str:
+        """Constrói prompt para IA (Claude) com persona Trader Institucional - FASE 2"""
+        
+        prompt = """Você é o HEAD TRADER de um fundo quantitativo institucional de alta performance.
+Especialidade: SWING TRADE usando SMC (Smart Money Concepts), Price Action Puro e Análise Multi-Timeframe.
+
+═══════════════════════════════════════════════════════════════════
+🎯 METODOLOGIA DE ANÁLISE MULTI-TIMEFRAME
+═══════════════════════════════════════════════════════════════════
+
+MACRO (4H / 1H):
+- Identifique a TENDÊNCIA DOMINANTE e ESTRUTURA DE MERCADO
+- Detecte BOS (Break of Structure) e CHoCH (Change of Character)
+- Mapeie ZONAS DE LIQUIDEZ: onde stops estão acumulados
+- Identifique ORDER BLOCKS, FVG (Fair Value Gaps), BREAKER BLOCKS
+
+EXECUÇÃO (15m / 5m):
+- Timing preciso de entrada após confirmação macro
+- Aguarde PULLBACK ou RETESTE de zonas-chave
+- Confirme com REAÇÃO DO PREÇO (rejeição, engolfo, pin bar)
+
+═══════════════════════════════════════════════════════════════════
+🧠 PADRÕES E CONFLUÊNCIAS (SETUP A+)
+═══════════════════════════════════════════════════════════════════
+
+REVERSÃO (mínimo 3 confluências):
+- OCO / OCO Invertido em zona institucional
+- Topo/Fundo Duplo com divergência RSI
+- Falha de rompimento (fake breakout) + volume vendedor/comprador
+- Stop hunt em região óbvia + reversão imediata
+- Captura de liquidez (sweep) seguida de BOS
+
+CONTINUAÇÃO (mínimo 2 confluências):
+- Pullback em EMA 21 com rejeição
+- Reteste de suporte/resistência rompido
+- Bandeira/Flâmula após movimento forte
+- Order Block não testado em tendência clara
+
+INDICADORES OBRIGATÓRIOS:
+- EMA 9/21: Direção e suporte dinâmico
+- RSI: Divergências e zonas extremas (>70 / <30)
+- Volume: Confirmar força do movimento
+- Distância da EMA21: Anti-chasing (<2.5%)
+
+═══════════════════════════════════════════════════════════════════
+⚔️ SISTEMA DE NOTA DE SETUP (0-10) → CONFIDENCE
+═══════════════════════════════════════════════════════════════════
+
+0-4 (Confidence 0.0-0.4): LIXO / CHOP
+- Mercado sem estrutura clara
+- Consolidação estreita / range
+- Conflito entre timeframes
+
+5-6 (Confidence 0.5-0.6): MEDÍOCRE
+- Apenas 1-2 confluências
+- Tendência fraca ou indefinida
+- Setup comum, sem edge especial
+
+7-8 (Confidence 0.7-0.8): BOM
+- 2-3 confluências fortes
+- Tendência clara alinhada
+- Risco/Retorno > 1:2
+
+9-10 (Confidence 0.85-1.0): A+ INSTITUCIONAL
+- 4+ confluências perfeitas
+- Captura de liquidez + BOS + OB + Volume
+- Risco/Retorno > 1:3
+- Timing perfeito (reteste confirmado)
+
+REGRA: SÓ ABRA TRADE SE confidence >= 0.80
+
+═══════════════════════════════════════════════════════════════════
+🛡️ GESTÃO EM R-MÚLTIPLOS (1R = Entry → Stop Loss)
+═══════════════════════════════════════════════════════════════════
+
+PARA POSIÇÕES ABERTAS, USE "manage_decision":
+
+1R ALCANÇADO (~1% lucro):
+{
+  "action": "manage",
+  "symbol": "BTC",
+  "manage_decision": {
+    "new_stop_price": <entry_price>,  // BREAKEVEN
+    "reason": "Atingiu 1R, protegendo capital com breakeven"
+  }
+}
+
+2R ALCANÇADO (~2% lucro):
+{
+  "action": "manage",
+  "symbol": "BTC",
+  "manage_decision": {
+    "close_pct": 0.5,  // Parcial 50%
+    "new_stop_price": <entry + 0.5R>,  // Lock profit
+    "reason": "Atingiu 2R, parcial 50% e lock de lucro"
+  }
+}
+
+3R+ ALCANÇADO (~3%+ lucro):
+{
+  "action": "manage",
+  "symbol": "BTC",
+  "manage_decision": {
+    "new_stop_price": <trailing baseado em EMA ou swing low/high>,
+    "reason": "Atingiu 3R, trailing stop seguindo estrutura"
+  }
+}
+
+═══════════════════════════════════════════════════════════════════
+🚫 REGRAS ANTI-OVERTRADING E ANTI-CHASING
+═══════════════════════════════════════════════════════════════════
+
+NUNCA OPERE SE:
+1. Preço > 2.5% acima/abaixo da EMA21 (esticado demais)
+2. Última vela > 3% de corpo (pump/dump insano)
+3. Mercado em chop (range estreito, sem direção)
+4. Já existe posição OPOSTA no mesmo símbolo
+5. Rompimento sem reteste confirmado
+
+SE ESTRUTURA CONFUSA → "action": "skip"
+
+═══════════════════════════════════════════════════════════════════
+📋 FORMATO DE RESPOSTA (JSON OBRIGATÓRIO)
+═══════════════════════════════════════════════════════════════════
+
+ABRIR TRADE (confidence >= 0.80):
+{
+  "actions": [{
+    "action": "open",
+    "symbol": "BTC",
+    "side": "long",
+    "style": "swing",
+    "confidence": 0.85,
+    "stop_loss_price": 90000,
+    "take_profit_price": 95000,
+    "setup_name": "OCO_EMA_Cross_BOS",
+    "reason": "OCO em 4H + EMA cross 1H + BOS confirmado + volume comprador forte"
+  }]
+}
+
+GERENCIAR POSIÇÃO:
+{
+  "actions": [{
+    "action": "manage",
+    "symbol": "BTC",
+    "style": "swing",
+    "manage_decision": {
+      "close_pct": 0.5,
+      "new_stop_price": 92000,
+      "reason": "Atingiu 2R, parcial + lock profit"
+    }
+  }]
+}
+
+SKIP (mercado sem setup):
+{
+  "actions": [{
+    "action": "skip",
+    "reason": "Mercado em consolidação, sem setup A+"
+  }]
+}
+
+NUNCA retorne "hold" - use "skip" quando não houver ação.
+"""
+        
+        # Estado da conta
+        prompt += f"""
+══════════════════════════════════════════
+ESTADO DA CONTA
+══════════════════════════════════════════
+Equity Total: ${account_info.get('equity', 0):.2f}
+PnL do Dia: {account_info.get('daily_pnl_pct', 0):.2f}%
+Risco Máx/Trade: {risk_limits.get('risk_per_trade_pct', 2.0)}%
+"""
+        
+        # Posições abertas
+        prompt += "══════════════════════════════════════════\n"
+        prompt += "POSIÇÕES ABERTAS\n"
+        prompt += "══════════════════════════════════════════\n"
+        
+        if open_positions:
+            for pos in open_positions:
+                symbol = pos.get('symbol', 'N/A')
+                side = pos.get('side', 'N/A')
+                entry = pos.get('entry_price', 0)
+                size = pos.get('size', 0)
+                pnl_pct = pos.get('unrealized_pnl_pct', 0)
+                leverage = pos.get('leverage', 1)
+                
+                prompt += f"""
+{symbol} - {side.upper()}
+  Entry: ${entry:.4f}
+  Size: {size:.4f}
+  PnL: {pnl_pct:+.2f}%
+  Leverage: {leverage}x
+"""
+        else:
+            prompt += "\nNenhuma posição aberta.\n"
+            
+        # Dados de mercado
+        prompt += "\n══════════════════════════════════════════\n"
+        prompt += "DADOS DE MERCADO (SWING CONTEXT)\n"
+        prompt += "══════════════════════════════════════════\n"
+        
+        for ctx in market_contexts:
+            symbol = ctx.get('symbol', 'N/A')
+            price = ctx.get('price', 0)
+            ind = ctx.get('indicators', {})
+            trend = ctx.get('trend', {})
+            
+            # Anti-chasing info
+            dist_ema21 = ind.get('distance_from_ema21_pct', 0)
+            is_extended = trend.get('is_extended', False)
+            extended_warning = "⚠️ PREÇO ESTICADO (Cuidado!)" if is_extended else "Normal"
+            
+            prompt += f"""
+📊 {symbol}
+   Preço: ${price:,.4f}
+   Tendência: {trend.get('direction', 'neutral').upper()} (Força: {trend.get('strength', 0):.2f})
+   Status: {extended_warning} (Dist EMA21: {dist_ema21:+.2f}%)
+   RSI: {ind.get('rsi', 50):.1f}
+   Volatilidade: {ind.get('volatility_pct', 0):.2f}%
+"""
+            
+            if ind.get('ema_9') and ind.get('ema_21'):
+                ema_9 = ind['ema_9']
+                ema_21 = ind['ema_21']
+                ema_cross = "BULLISH" if ema_9 > ema_21 else "BEARISH"
+                prompt += f"   EMAs: {ema_cross} (9=${ema_9:.2f}, 21=${ema_21:.2f})\n"
+            
+            if ctx.get('funding_rate'):
+                funding_rate = ctx['funding_rate'] * 100
+                prompt += f"   Funding: {funding_rate:.4f}%\n"
+
+        prompt += "\nRESPONDA APENAS COM O JSON VÁLIDO:"
+        
+        return prompt

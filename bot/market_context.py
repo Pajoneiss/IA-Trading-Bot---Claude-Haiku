@@ -82,11 +82,13 @@ class MarketContext:
                 'bb_upper': round(bb_bands['upper'], 2) if bb_bands else None,
                 'bb_middle': round(bb_bands['middle'], 2) if bb_bands else None,
                 'bb_lower': round(bb_bands['lower'], 2) if bb_bands else None,
-                'volatility_pct': round(volatility, 2) if volatility else None
+                'volatility_pct': round(volatility, 2) if volatility else None,
+                'distance_from_ema21_pct': round(((current_price - ema_21) / ema_21) * 100, 2) if ema_21 else 0.0
             },
             'trend': {
                 'direction': trend_info['trend'],
-                'strength': round(trend_info['strength'], 2)
+                'strength': round(trend_info['strength'], 2),
+                'is_extended': abs(((current_price - ema_21) / ema_21) * 100) > 2.5 if ema_21 else False
             },
             'candles_count': len(candles)
         }
@@ -163,5 +165,10 @@ class MarketContext:
             
             if ctx.get('funding_rate'):
                 summary_lines.append(f"  Funding: {ctx['funding_rate']:.4f}%")
+            
+            # Anti-Chasing Warning
+            dist_ema21 = ind.get('distance_from_ema21_pct', 0)
+            if abs(dist_ema21) > 2.5:
+                summary_lines.append(f"  ⚠️ PREÇO ESTICADO: {dist_ema21:+.2f}% da EMA21 (Cuidado com Chasing!)")
         
         return "\n".join(summary_lines)

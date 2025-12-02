@@ -383,6 +383,10 @@ class HyperliquidBot:
             min_notional=config['min_notional']
         )
         
+        # PARTE 2: Limite efetivo de posições (máximo 6)
+        self.effective_max_positions = min(config['max_open_trades'], 6)
+        self.logger.info(f"🛡️ Limite efetivo de posições: {self.effective_max_positions}")
+        
         self.ai_engine = DualAiDecisionEngine(
             anthropic_key=config.get('anthropic_api_key'),
             openai_key=config.get('openai_api_key'),
@@ -694,6 +698,9 @@ class HyperliquidBot:
         if self.paused:
             self.logger.info("⏸️ Bot PAUSADO pelo usuário via Telegram. Aguardando...")
             return
+        
+        # PARTE 2: Contador de novos trades por iteração (máximo 1)
+        new_trades_this_iteration = 0
 
         # 1. Buscar dados em tempo real
         self.logger.info("📊 Buscando dados de mercado...")
@@ -809,7 +816,7 @@ class HyperliquidBot:
                 
                 # Filtra e taggeia
                 for dec in all_decisions:
-                    if dec.get('action') != 'hold':
+                    if dec.get('action') not in ('hold', 'skip'):
                         dec['source'] = 'claude_swing'
                         dec['style'] = 'swing'
                         swing_decisions.append(dec)
@@ -856,9 +863,10 @@ class HyperliquidBot:
                         if decisions:
                             # Taggeia
                             for dec in decisions:
-                                dec['source'] = 'openai_scalp'
-                                dec['style'] = 'scalp'
-                                scalp_decisions.append(dec)
+                                if dec.get('action') not in ('hold', 'skip'):
+                                    dec['source'] = 'openai_scalp'
+                                    dec['style'] = 'scalp'
+                                    scalp_decisions.append(dec)
                                 
                             self.ai_manager.register_scalp_call(symbol)
                             
@@ -881,7 +889,19 @@ class HyperliquidBot:
             symbol = decision.get('symbol', 'UNKNOWN')
             
             if action == 'open':
-                self._execute_open(decision, all_prices)
+                # PARTE 2: Limitar 1 trade por iteração
+                if new_trades_this_iteration >= 1:
+                    self.logger.info("🛡️ Limite de 1 trade por iteração atingido. Ignorando demais sinais.")
+                    break
+                
+                # Executar abertura
+                success = self._execute_open(decision, all_prices)
+                if success:
+                    new_trades_this_iteration += 1
+            
+            elif action == 'manage':
+                # PARTE 3: AI Management System
+                self._execute_manage(decision, all_prices)
                 
             elif action == 'increase':
                 self._execute_increase(decision, all_prices)
@@ -1054,8 +1074,10 @@ class HyperliquidBot:
         except Exception as e:
             self.logger.error(f"Erro ao realizar parcial: {e}")
     
-    def _execute_open(self, decision: Dict[str, Any], prices: Dict[str, float]):
-        """Executa abertura de posição - USA VALORES DA IA"""
+    def _execute_open(self, decision: Dict[str, Any], prices: Dict[str, float]) -> bool:
+        """Executa abertura de posição - USA VALORES DA IA
+        Returns: True se posição foi aberta com sucesso, False caso contrário
+        """
         symbol = decision['symbol']
         side = decision.get('side', 'long')
         size_usd = decision.get('size_usd', 20)
@@ -1076,22 +1098,44 @@ class HyperliquidBot:
             f"strategy={strategy} source={source} reason={reason}"
         )
         
+        # PARTE 5: Quality Gate - Verificar confiança mínima
+        if confidence < 0.60:
+            self.logger.warning(f"[RISK] Sinal fraco descartado: {symbol} confidence={confidence:.2f} < 0.60")
+            return False
+        
         # Verifica se já tem posição
         if self.position_manager.has_position(symbol):
             self.logger.warning(f"{symbol}: Já existe posição aberta, ignorando")
-            return
+            return False
+        
+        # PARTE 2: Bloquear trades opostos no mesmo símbolo
+        existing_pos = self.position_manager.get_position(symbol)
+        if existing_pos and existing_pos.side != side:
+            self.logger.warning(
+                f"[RISK] Trade bloqueado por conflito de direção: "
+                f"Posição existente {existing_pos.side.upper()} vs novo sinal {side.upper()}"
+            )
+            return False
+        
+        # PARTE 2: Verificar limite efetivo de posições
+        current_positions = self.position_manager.get_positions_count()
+        if current_positions >= self.effective_max_positions:
+            self.logger.warning(
+                f"[RISK] Limite de posições atingido: {current_positions}/{self.effective_max_positions}"
+            )
+            return False
             
         # Obtém preço atual
         current_price = prices.get(symbol)
         if not current_price:
             self.logger.error(f"{symbol}: Preço não disponível")
-            return
+            return False
             
         try:
             current_price = float(current_price)
         except:
             self.logger.error(f"{symbol}: Preço inválido")
-            return
+            return False
 
         # 1. Define multiplicador de risco baseado no estilo
         risk_multiplier = 1.0
@@ -1100,12 +1144,20 @@ class HyperliquidBot:
             self.logger.info(f"⚡ SCALP detectado: Reduzindo risco para {risk_multiplier}x")
             
         # 2. Calcula SL em % para o Risk Manager
-        sl_pct = 2.0
-        if stop_loss_price and current_price > 0:
+        # PARTE 1: FIX CRÍTICO - Extração segura de stop_loss_pct
+        stop_loss_pct = decision.get("stop_loss_pct")
+        if stop_loss_pct is None and stop_loss_price and current_price > 0:
+            # Calcula % a partir do preço
             if side == 'long':
-                sl_pct = ((current_price - stop_loss_price) / current_price) * 100
+                stop_loss_pct = ((current_price - stop_loss_price) / current_price) * 100
             else:
-                sl_pct = ((stop_loss_price - current_price) / current_price) * 100
+                stop_loss_pct = ((stop_loss_price - current_price) / current_price) * 100
+        
+        # Se ainda for None, usa default
+        if stop_loss_pct is None:
+            stop_loss_pct = 2.0
+        
+        sl_pct = stop_loss_pct
         
         # 3. Calcula Position Size com Risk Manager
         position_data = self.risk_manager.calculate_position_size(
@@ -1117,19 +1169,21 @@ class HyperliquidBot:
         
         if not position_data:
             self.logger.warning(f"{symbol}: Risk Manager bloqueou o trade")
-            return
+            return False
             
         # Usa valores calculados pelo Risk Manager
         size = position_data['size']
         leverage = position_data['leverage']
         
         # Recalcula TP em % para o Position Manager
-        if take_profit_price:
+        take_profit_pct = decision.get("take_profit_pct")
+        if take_profit_pct is None and take_profit_price:
             if side == 'long':
                 take_profit_pct = ((take_profit_price - current_price) / current_price) * 100
             else:
                 take_profit_pct = ((current_price - take_profit_price) / current_price) * 100
-        else:
+        
+        if take_profit_pct is None:
             take_profit_pct = 6.0  # Default
         
         self.logger.info(f"💰 Size calculado: {size:.6f} {symbol}")
@@ -1137,7 +1191,7 @@ class HyperliquidBot:
         # Modo DRY RUN
         if not self.live_trading:
             self.logger.warning("⚠️  DRY RUN MODE - Ordem NÃO executada na exchange")
-            self.logger.info(f"[SIMULAÇÃO] Abrindo {side.upper()} {symbol} @ ${current_price:.2f}")
+            self.logger.info(f"[SIMULAÇÃO] Abrindo ISOLATED {side.upper()} {symbol} @ ${current_price:.2f}")
             
             self.position_manager.add_position(
                 symbol=symbol,
@@ -1147,17 +1201,18 @@ class HyperliquidBot:
                 leverage=leverage,
                 stop_loss_pct=stop_loss_pct,
                 take_profit_pct=take_profit_pct,
-                strategy='ai_autonomous'
+                strategy=strategy
             )
-            return
+            return True
             
         # Modo LIVE
         try:
-            self.logger.info("🚀 Enviando ordem para exchange...")
+            # PARTE 1: Garantir margem ISOLATED
+            self.logger.info(f"🚀 Abrindo posição ISOLATED {symbol}...")
             
-            # 1. Ajusta alavancagem
-            self.logger.info(f"⚙️  Ajustando leverage para {leverage}x...")
-            self.client.adjust_leverage(symbol, leverage, is_cross=True)
+            # 1. Ajusta alavancagem para ISOLATED
+            self.logger.info(f"⚙️  Ajustando leverage para {leverage}x ISOLATED...")
+            self.client.adjust_leverage(symbol, leverage, is_cross=False)  # ISOLATED = False
             
             # 2. Envia ordem
             self.logger.info(f"📤 Enviando ordem MARKET {side.upper()}...")
@@ -1174,7 +1229,7 @@ class HyperliquidBot:
             
             # Verifica sucesso
             if result.get('status') == 'ok':
-                self.logger.info(f"Posição adicionada: {symbol} {side.upper()}")
+                self.logger.info(f"✅ Posição ISOLATED adicionada: {symbol} {side.upper()}")
                 self.position_manager.add_position(
                     symbol=symbol,
                     side=side,
@@ -1183,10 +1238,10 @@ class HyperliquidBot:
                     leverage=leverage,
                     stop_loss_pct=stop_loss_pct,
                     take_profit_pct=take_profit_pct,
-                    strategy='ai_autonomous'
+                    strategy=strategy
                 )
                 
-                # 📱 Notifica via Telegram
+                # 📱 Notifica via Telegram com informações completas
                 self.telegram.notify_position_opened(
                     symbol=symbol,
                     side=side,
@@ -1196,17 +1251,125 @@ class HyperliquidBot:
                     strategy=strategy,
                     confidence=confidence,
                     reason=reason,
-                    source=source
+                    source=source,
+                    margin_type="ISOLATED"  # PARTE 6: Mostrar margem no Telegram
                 )
+                return True
 
             else:
                 self.logger.error(f"❌ Falha ao abrir posição: {result}")
+                return False
                 
         except Exception as e:
             self.logger.error(f"❌ Erro crítico ao executar ordem: {e}", exc_info=True)
             self.telegram.notify_error("Erro ao abrir posição", f"{symbol}: {str(e)}")
+            return False
+    
+    def _execute_manage(self, decision: Dict[str, Any], prices: Dict[str, float]):
+        """PARTE 3: Executa gestão de posição decidida pela IA
+        Suporta: parciais, ajuste de SL/TP, breakeven, trailing stop
+        """
+        symbol = decision.get('symbol')
+        manage_decision = decision.get('manage_decision', {})
+        
+        if not symbol or not manage_decision:
+            self.logger.warning("[AI MANAGE] Decisão inválida: faltam dados")
+            return
+        
+        # Verifica se tem posição
+        if not self.position_manager.has_position(symbol):
+            self.logger.warning(f"[AI MANAGE] {symbol}: Sem posição para gerenciar")
+            return
+        
+        position = self.position_manager.get_position(symbol)
+        current_price = prices.get(symbol)
+        
+        if not current_price:
+            self.logger.error(f"[AI MANAGE] {symbol}: Preço não disponível")
+            return
+        
+        try:
+            current_price = float(current_price)
+        except:
+            self.logger.error(f"[AI MANAGE] {symbol}: Preço inválido")
+            return
+        
+        reason = manage_decision.get('reason', 'AI management')
+        
+        self.logger.info(f"🧠 [AI MANAGE] {symbol}: {reason}")
+        
+        # 1. PARCIAL (close_pct)
+        close_pct = manage_decision.get('close_pct', 0)
+        if close_pct > 0:
+            self.logger.info(f"📊 Fechando {close_pct*100:.0f}% da posição...")
+            
+            reduce_size = position.size * close_pct
+            sz_decimals = self.client.sz_decimals_cache.get(symbol, 4)
+            reduce_size = round(reduce_size, sz_decimals)
+            
+            if not self.live_trading:
+                # Simulação
+                new_size = position.size - reduce_size
+                if new_size < 0.0001:
+                    self.position_manager.remove_position(symbol)
+                else:
+                    self.position_manager.update_position(symbol, new_size, position.entry_price)
+            else:
+                # Live
+                try:
+                    is_buy_close = (position.side == 'short')
+                    result = self.client.place_order(
+                        coin=symbol,
+                        is_buy=is_buy_close,
+                        size=reduce_size,
+                        price=current_price,
+                        order_type="market",
+                        reduce_only=True
+                    )
+                    
+                    if result.get('status') == 'ok':
+                        new_size = position.size - reduce_size
+                        if new_size < 0.0001:
+                            self.position_manager.remove_position(symbol)
+                        else:
+                            self.position_manager.update_position(symbol, new_size, position.entry_price)
+                except Exception as e:
+                    self.logger.error(f"[AI MANAGE] Erro ao fechar parcial: {e}")
+        
+        # 2. AJUSTE DE STOP LOSS
+        new_stop_price = manage_decision.get('new_stop_price')
+        if new_stop_price:
+            # Calcula novo SL em %
+            if position.side == 'long':
+                new_sl_pct = ((current_price - new_stop_price) / current_price) * 100
+            else:
+                new_sl_pct = ((new_stop_price - current_price) / current_price) * 100
+            
+            # Detecta breakeven
+            if abs(new_stop_price - position.entry_price) < (position.entry_price * 0.001):  # 0.1% tolerance
+                self.logger.info(f"🎯 BREAKEVEN detectado: Movendo SL para entry @ ${position.entry_price:.2f}")
+            # Detecta trailing
+            elif (position.side == 'long' and new_stop_price > position.entry_price) or \
+                 (position.side == 'short' and new_stop_price < position.entry_price):
+                self.logger.info(f"📈 TRAILING STOP: Movendo SL para ${new_stop_price:.2f} (no lucro)")
+            else:
+                self.logger.info(f"🛡️ Ajustando SL para ${new_stop_price:.2f} ({new_sl_pct:.2f}%)")
+            
+            self.position_manager.update_stop_loss(symbol, new_sl_pct)
+        
+        # 3. AJUSTE DE TAKE PROFIT
+        new_tp_price = manage_decision.get('new_take_profit_price')
+        if new_tp_price:
+            if position.side == 'long':
+                new_tp_pct = ((new_tp_price - current_price) / current_price) * 100
+            else:
+                new_tp_pct = ((current_price - new_tp_price) / current_price) * 100
+            
+            self.logger.info(f"🎯 Ajustando TP para ${new_tp_price:.2f} ({new_tp_pct:.2f}%)")
+            self.position_manager.update_take_profit(symbol, new_tp_pct)
     
     def _execute_close(self, action: Dict[str, Any], prices: Dict[str, float]):
+
         """Executa fechamento de posição"""
         symbol = action['symbol']
         reason = action.get('reason', 'unknown')
