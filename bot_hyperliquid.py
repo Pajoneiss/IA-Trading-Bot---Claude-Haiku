@@ -101,12 +101,16 @@ class HyperliquidBotClient:
         
         # Cache de mapeamento símbolo -> asset index
         self.asset_index_cache = {}
+        
+        # PATCH: Cache de metadata dos ativos (maxLeverage, onlyIsolated)
+        self.asset_meta = {}
+        
         self._load_asset_indices()
         
         self.logger.info(f"HyperliquidBotClient inicializado (network={network})")
     
     def _load_asset_indices(self):
-        """Carrega mapeamento de símbolos para índices de assets"""
+        """Carrega mapeamento de símbolos para índices de assets + metadata"""
         try:
             payload = {"type": "meta"}
             response = self.requests.post(self.info_url, json=payload, timeout=10)
@@ -119,10 +123,18 @@ class HyperliquidBotClient:
                 symbol = asset.get('name')
                 self.asset_index_cache[symbol] = idx
                 self.sz_decimals_cache[symbol] = asset.get('szDecimals', 4) # Default 4
+                
+                # PATCH: Armazena maxLeverage e onlyIsolated
+                self.asset_meta[symbol] = {
+                    'max_leverage': asset.get('maxLeverage', 50),  # Default 50x
+                    'only_isolated': asset.get('onlyIsolated', False)
+                }
             
-            self.logger.info(f"✅ Carregados {len(self.asset_index_cache)} assets e metadados")
+            self.logger.info(f"✅ Carregados {len(self.asset_index_cache)} assets e metadados (maxLeverage, onlyIsolated)")
         except Exception as e:
             self.logger.error(f"❌ Erro ao carregar asset indices: {e}")
+            # Em caso de erro, usa valores seguros
+            self.logger.warning("⚠️ Usando valores seguros de leverage (max=20x) por falha ao carregar metadata")
     
     def _sign_message(self, message: Dict) -> str:
         """Assina mensagem para autenticação"""
@@ -219,7 +231,7 @@ class HyperliquidBotClient:
         return formatted
     
     def get_positions(self) -> List[Dict[str, Any]]:
-        """Obtém posições abertas"""
+        """Obtém posições abertas com dados completos (leverage real, margin, etc)"""
         def safe_float(value, default=0.0):
             """Converte valor para float com segurança"""
             if value is None:
@@ -237,12 +249,26 @@ class HyperliquidBotClient:
             size = safe_float(position.get('szi', 0))
             
             if size != 0:  # Apenas posições abertas
+                entry_price = safe_float(position.get('entryPx', 0))
+                
+                # PATCH: Extrai dados de leverage e margem
+                leverage_data = asset_position.get('leverage', {})
+                leverage_type = leverage_data.get('type', 'cross')  # 'cross' ou 'isolated'
+                leverage_value = int(leverage_data.get('value', 1))
+                
+                # Calcula margin_used e notional para leverage real
+                margin_used = safe_float(position.get('marginUsed', 0))
+                notional = abs(size) * entry_price
+                
                 positions.append({
                     'coin': position.get('coin'),
                     'size': size,
-                    'entry_price': safe_float(position.get('entryPx', 0)),
+                    'entry_price': entry_price,
                     'unrealized_pnl': safe_float(position.get('unrealizedPnl', 0)),
-                    'leverage': int(asset_position.get('leverage', {}).get('value', 1)),
+                    'leverage': leverage_value,
+                    'leverage_type': leverage_type,  # PATCH: 'cross' ou 'isolated'
+                    'margin_used': margin_used,      # PATCH: margem usada
+                    'notional': notional,             # PATCH: valor notional
                     'liquidation_px': safe_float(position.get('liquidationPx', 0))
                 })
         
@@ -333,6 +359,38 @@ class HyperliquidBotClient:
         except Exception as e:
             self.logger.error(f"❌ Erro no SDK adjust_leverage: {e}")
             return {'status': 'err', 'response': str(e)}
+    
+    def format_leverage_display(self, position_data: Dict[str, Any]) -> str:
+        """
+        PATCH: Formata leverage para exibição correta no Telegram
+        
+        Usa dados REAIS da Hyperliquid, não valores pedidos pela IA.
+        
+        Args:
+            position_data: Dict com dados da posição da Hyperliquid contendo:
+                - leverage_type: 'cross' ou 'isolated'
+                - margin_used: margem usada (para ISOLATED)
+                - notional: valor notional da posição
+                - leverage: valor de leverage (pode ser enganoso em CROSS)
+        
+        Returns:
+            String formatada, ex: "5x (ISOLATED)" ou "1x (CROSS)"
+        """
+        leverage_type = position_data.get('leverage_type', 'cross')
+        margin_used = position_data.get('margin_used', 0)
+        notional = position_data.get('notional', 0)
+        
+        if leverage_type == 'cross':
+            # CROSS: Mostra sempre 1x pois usa margem compartilhada
+            return "1x (CROSS)"
+        else:
+            # ISOLATED: Calcula leverage real = notional / margin_used
+            if margin_used > 0:
+                effective_lev = notional / margin_used
+                return f"{effective_lev:.0f}x (ISOLATED)"
+            else:
+                # Fallback se margin_used não disponível
+                return f"{position_data.get('leverage', 1)}x (ISOLATED)"
     
     def cancel_all_orders(self, coin: Optional[str] = None):
         """Cancela todas as ordens"""
@@ -562,6 +620,13 @@ class HyperliquidBot:
             equity = self.risk_manager.current_equity
             daily_pnl = self.risk_manager.daily_pnl_pct
             positions = self.position_manager.get_all_positions(current_prices=all_prices)
+            
+            # PATCH: Enriquece com dados reais da Hyperliquid para exibição correta
+            try:
+                exchange_positions = self.client.get_positions()
+                positions = self.position_manager.enrich_with_exchange_data(positions, exchange_positions)
+            except Exception as e:
+                self.logger.warning(f"Não foi possível enriquecer posições com dados da Hyperliquid: {e}")
             
             self.telegram.notify_summary(
                 equity=equity,
@@ -1173,7 +1238,33 @@ class HyperliquidBot:
             
         # Usa valores calculados pelo Risk Manager
         size = position_data['size']
-        leverage = position_data['leverage']
+        requested_leverage = position_data['leverage']
+        
+        # PATCH TAREFA 2: Respeitar maxLeverage por ativo
+        asset_meta = self.client.asset_meta.get(symbol, {})
+        asset_max_leverage = asset_meta.get('max_leverage', self.risk_manager.max_leverage)
+        
+        # Aplica o menor leverage entre: pedido, máximo do ativo, global
+        final_leverage = min(
+            requested_leverage,
+            asset_max_leverage,
+            self.risk_manager.max_leverage
+        )
+        
+        # Log se houve ajuste
+        if final_leverage < requested_leverage:
+            self.logger.warning(
+                f"[RISK] Ajustando leverage de {requested_leverage}x para {final_leverage}x "
+                f"em {symbol} (limite do ativo: {asset_max_leverage}x)"
+            )
+        
+        # Verifica se ativo é only_isolated
+        only_isolated = asset_meta.get('only_isolated', False)
+        if only_isolated:
+            self.logger.info(f"ℹ️  {symbol} é only_isolated, garantindo modo ISOLATED")
+        
+        # Usa leverage final
+        leverage = final_leverage
         
         # Recalcula TP em % para o Position Manager
         take_profit_pct = decision.get("take_profit_pct")
@@ -1241,18 +1332,40 @@ class HyperliquidBot:
                     strategy=strategy
                 )
                 
-                # 📱 Notifica via Telegram com informações completas
+                # PATCH TAREFA 1: Buscar dados REAIS da Hyperliquid para exibição correta
+                try:
+                    # Busca posições atualizadas da exchange
+                    exchange_positions = self.client.get_positions()
+                    # Encontra a posição recém-aberta
+                    real_position = next(
+                        (p for p in exchange_positions if p['coin'] == symbol),
+                        None
+                    )
+                    
+                    if real_position:
+                        # Usa dados reais da Hyperliquid
+                        leverage_display = self.client.format_leverage_display(real_position)
+                        self.logger.info(f"📊 Leverage real da Hyperliquid: {leverage_display}")
+                    else:
+                        # Fallback se não encontrar (não deveria acontecer)
+                        leverage_display = f"{leverage}x (ISOLATED)"
+                        self.logger.warning(f"⚠️ Posição {symbol} não encontrada na Hyperliquid, usando fallback")
+                except Exception as e:
+                    # Fallback em caso de erro
+                    leverage_display = f"{leverage}x (ISOLATED)"
+                    self.logger.warning(f"⚠️ Erro ao buscar dados reais: {e}, usando fallback")
+                
+                # 📱 Notifica via Telegram com informações REAIS
                 self.telegram.notify_position_opened(
                     symbol=symbol,
                     side=side,
                     entry_price=current_price,
                     size=size,
-                    leverage=leverage,
+                    leverage_display=leverage_display,  # PATCH: Usa string formatada
                     strategy=strategy,
                     confidence=confidence,
                     reason=reason,
-                    source=source,
-                    margin_type="ISOLATED"  # PARTE 6: Mostrar margem no Telegram
+                    source=source
                 )
                 return True
 
