@@ -33,6 +33,7 @@ MAX_DAILY_DRAWDOWN_PCT=10.0
 MAX_OPEN_TRADES=3
 MAX_LEVERAGE=50
 MIN_NOTIONAL=0.5
+MAX_EQUITY_PER_TRADE_PCT=0.05
 
 # === STOP/TAKE PROFIT ===
 DEFAULT_STOP_PCT=2.0
@@ -43,7 +44,7 @@ TRADING_LOOP_SLEEP_SECONDS=30
 LOG_LEVEL=INFO
 
 # =========================================================================
-# TOTAL: 16 variáveis
+# TOTAL: 17 variáveis
 # =========================================================================
 #
 # ✅ CHECKLIST - Marque conforme adiciona no Railway:
@@ -59,6 +60,7 @@ LOG_LEVEL=INFO
 # [ ] MAX_OPEN_TRADES
 # [ ] MAX_LEVERAGE
 # [ ] MIN_NOTIONAL
+# [ ] MAX_EQUITY_PER_TRADE_PCT
 # [ ] DEFAULT_STOP_PCT
 # [ ] DEFAULT_TP_PCT
 # [ ] TRADING_LOOP_SLEEP_SECONDS
