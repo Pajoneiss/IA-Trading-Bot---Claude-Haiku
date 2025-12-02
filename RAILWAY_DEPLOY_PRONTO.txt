@@ -1,0 +1,322 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                                                                              ║
+║              🚀 TUDO PRONTO PARA RAILWAY! ✅                                ║
+║                                                                              ║
+║                    Bot 24/7 em 10 Minutos!                                  ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  📦 ARQUIVOS CRIADOS PARA RAILWAY                                            │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+✅ Procfile                    → Diz ao Railway como rodar o bot
+✅ railway.json                → Configurações de build e deploy
+✅ runtime.txt                 → Versão do Python (3.11)
+✅ .gitignore                  → Protege credenciais no Git
+✅ .railwayignore              → Otimiza o deploy
+✅ README_RAILWAY.md           → Guia completo passo-a-passo
+✅ check_deploy.py             → Script de verificação
+✅ RAILWAY_VARIABLES.txt       → Suas variáveis prontas para copiar
+
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  🎯 INÍCIO RÁPIDO (10 MINUTOS)                                               │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+1️⃣  BAIXAR ARQUIVOS (1 min)
+    → Baixe TODOS os arquivos desta conversa
+    → Salve em: C:\Users\...\hyperliquid-mcp-bruno\
+
+2️⃣  CRIAR REPOSITÓRIO GITHUB (2 min)
+    → github.com → New Repository
+    → Nome: hyperliquid-bot
+    → ⚠️ PRIVATE (importante!)
+    → Upload dos arquivos (MENOS .env!)
+
+3️⃣  CRIAR PROJETO RAILWAY (2 min)
+    → railway.app → Login com GitHub
+    → New Project → Deploy from GitHub
+    → Seleciona hyperliquid-bot
+
+4️⃣  CONFIGURAR VARIÁVEIS (5 min)
+    → Railway → Variables → + New Variable
+    → Copie de RAILWAY_VARIABLES.txt
+    → 16 variáveis no total
+
+5️⃣  PRONTO! (automático)
+    → Railway faz deploy sozinho
+    → Bot começa a rodar
+    → Veja logs em tempo real!
+
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  📖 ARQUIVOS PRINCIPAIS                                                      │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌─ README_RAILWAY.md ─────────────────────────────────────────────────┐
+│                                                                      │
+│  📘 GUIA COMPLETO COM:                                               │
+│  • Passo-a-passo detalhado                                           │
+│  • 2 métodos de deploy (GitHub + CLI)                                │
+│  • Screenshots e explicações                                         │
+│  • Troubleshooting completo                                          │
+│  • Monitoramento e gerenciamento                                     │
+│  • Custos e limites                                                  │
+│  • Segurança e boas práticas                                         │
+│                                                                      │
+│  ⭐ COMECE POR AQUI!                                                 │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌─ RAILWAY_VARIABLES.txt ─────────────────────────────────────────────┐
+│                                                                      │
+│  🔑 SUAS CREDENCIAIS PRONTAS:                                        │
+│  • Todas as 16 variáveis                                             │
+│  • Formatadas para copiar/colar                                      │
+│  • Com valores corretos                                              │
+│  • Checklist incluído                                                │
+│                                                                      │
+│  💡 Use este arquivo para configurar no Railway                      │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌─ check_deploy.py ───────────────────────────────────────────────────┐
+│                                                                      │
+│  ✅ SCRIPT DE VERIFICAÇÃO:                                           │
+│  • Roda antes do deploy                                              │
+│  • Verifica se tudo está OK                                          │
+│  • Lista o que está faltando                                         │
+│                                                                      │
+│  Execute: python check_deploy.py                                     │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  🎓 O QUE CADA ARQUIVO FAZ                                                   │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Procfile
+├─ Tipo: Arquivo de configuração Railway
+├─ Conteúdo: "worker: python bot_hyperliquid.py"
+└─ Função: Diz ao Railway qual comando executar
+
+railway.json
+├─ Tipo: Configuração avançada Railway
+├─ Conteúdo: Build settings, restart policy
+└─ Função: Configura como Railway deve buildar e rodar
+
+runtime.txt
+├─ Tipo: Especificação de runtime
+├─ Conteúdo: "python-3.11"
+└─ Função: Define versão do Python a usar
+
+.gitignore
+├─ Tipo: Configuração Git
+├─ Conteúdo: Lista de arquivos a ignorar
+└─ Função: Protege .env e credenciais no Git
+
+.railwayignore
+├─ Tipo: Configuração Railway
+├─ Conteúdo: Lista de arquivos a não fazer upload
+└─ Função: Otimiza tamanho do deploy
+
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  ⚙️  SUAS VARIÁVEIS (16 TOTAL)                                               │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+🔑 Credenciais Hyperliquid (3):
+   ├─ HYPERLIQUID_WALLET_ADDRESS
+   ├─ HYPERLIQUID_PRIVATE_KEY
+   └─ HYPERLIQUID_NETWORK
+
+🤖 Credenciais IA (2):
+   ├─ ANTHROPIC_API_KEY
+   └─ AI_MODEL
+
+⚙️  Configurações Trading (2):
+   ├─ LIVE_TRADING
+   └─ PAIRS_TO_TRADE
+
+💰 Gerenciamento de Risco (5):
+   ├─ RISK_PER_TRADE_PCT
+   ├─ MAX_DAILY_DRAWDOWN_PCT
+   ├─ MAX_OPEN_TRADES
+   ├─ MAX_LEVERAGE
+   └─ MIN_NOTIONAL
+
+🎯 Stops e Targets (2):
+   ├─ DEFAULT_STOP_PCT
+   └─ DEFAULT_TP_PCT
+
+🔧 Configurações Bot (2):
+   ├─ TRADING_LOOP_SLEEP_SECONDS
+   └─ LOG_LEVEL
+
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  🔒 SEGURANÇA                                                                │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+✅ O QUE FIZEMOS PARA PROTEGER VOCÊ:
+
+1. .gitignore configurado
+   → .env NÃO será commitado ao Git
+   → Suas credenciais ficam seguras
+
+2. Repositório PRIVATE recomendado
+   → Apenas você tem acesso
+   → Código não fica público
+
+3. Variáveis no Railway
+   → Credenciais ficam criptografadas
+   → Não aparecem no código
+   → Acessíveis apenas por você
+
+4. RAILWAY_VARIABLES.txt
+   → Arquivo LOCAL apenas
+   → NÃO envie ao Git
+   → Use só para configurar Railway
+
+⚠️ IMPORTANTE:
+   • NUNCA commite o .env
+   • Use repositório PRIVATE
+   • Não compartilhe screenshots com credenciais
+   • Revogue keys se comprometer
+
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  💰 CUSTOS                                                                   │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Railway Hobby Plan: $5/mês
+
+✅ Inclui:
+   • 500 horas de execução/mês
+   • 5GB RAM
+   • 1GB disco
+   • Reinício automático
+   • Logs ilimitados
+   • SSL grátis
+
+⚠️ Seu bot usa ~720h/mês (24/7)
+   → Precisa do plano Hobby ($5/mês)
+
+🎁 Trial Grátis:
+   • $5 de crédito inicial
+   • ~1 mês grátis para testar!
+
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  📊 O QUE ESPERAR                                                            │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Após deploy no Railway, você verá nos logs:
+
+[2024-11-24 20:50:00] [INFO] ============================================
+[2024-11-24 20:50:00] [INFO] 🤖 HYPERLIQUID BOT INICIALIZADO
+[2024-11-24 20:50:00] [INFO] Network: mainnet
+[2024-11-24 20:50:00] [INFO] Wallet: 0x96E09Fb5...
+[2024-11-24 20:50:00] [INFO] IA: Ativada ✅
+[2024-11-24 20:50:00] [INFO] Modo: LIVE TRADING ⚠️
+[2024-11-24 20:50:00] [INFO] Pares: BTC, ETH, SOL
+[2024-11-24 20:50:00] [INFO] ============================================
+
+[2024-11-24 20:50:01] [INFO] 📊 Buscando dados de mercado...
+[2024-11-24 20:50:02] [INFO] Equity=$112.25 | DD_Dia=+0.00% | Posições=3/3
+
+[2024-11-24 20:50:03] [INFO] 🔍 Analisando mercado...
+[2024-11-24 20:50:03] [INFO] BTC: $88,776.50 (+0.2% 24h)
+[2024-11-24 20:50:03] [INFO]   Tendência: BULLISH (força: 0.65)
+
+[2024-11-24 20:50:05] [INFO] 🤖 Consultando IA para decisões...
+[2024-11-24 20:50:10] [INFO] ✅ IA retornou 0 decisões (já no limite)
+
+[2024-11-24 20:50:10] [INFO] 🎯 Verificando stops/TPs...
+[2024-11-24 20:50:10] [INFO] === POSIÇÕES ABERTAS (3) ===
+[2024-11-24 20:50:10] [INFO] ETH LONG: entry=$2,903.10 | PnL=+$0.75
+[2024-11-24 20:50:10] [INFO] AAVE LONG: entry=$174.63 | PnL=+$0.51
+[2024-11-24 20:50:10] [INFO] SOL LONG: entry=$138.75 | PnL=+$0.02
+
+[2024-11-24 20:50:10] [INFO] ✅ Iteração completa
+[2024-11-24 20:50:10] [INFO] 💤 Aguardando 30s até próxima iteração...
+
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  ✅ CHECKLIST FINAL                                                          │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Antes de fazer deploy:
+
+[ ] Baixei TODOS os arquivos desta conversa
+[ ] Tenho conta no GitHub
+[ ] Criei repositório PRIVATE
+[ ] Enviei arquivos ao GitHub (MENOS .env)
+[ ] Tenho conta no Railway
+[ ] Criei projeto no Railway
+[ ] Conectei ao repositório GitHub
+[ ] Configurei TODAS as 16 variáveis
+[ ] LIVE_TRADING=true (se quero operar real)
+[ ] Li README_RAILWAY.md
+[ ] Entendo os riscos
+[ ] Pronto para deploy! 🚀
+
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  🎉 VOCÊ ESTÁ PRONTO!                                                        │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+📥 BAIXE ESTES ARQUIVOS:
+
+   [CRÍTICO - Leia primeiro]
+   ⭐ README_RAILWAY.md        → Guia completo passo-a-passo
+
+   [Configure no Railway]
+   🔑 RAILWAY_VARIABLES.txt    → Suas 16 variáveis prontas
+
+   [Verificação]
+   ✅ check_deploy.py          → Testa se está tudo OK
+
+   [Arquivos Railway]
+   📄 Procfile                 → Comando de execução
+   📄 railway.json             → Configurações
+   📄 runtime.txt              → Versão Python
+   📄 .gitignore               → Proteção credenciais
+   📄 .railwayignore           → Otimização deploy
+
+   [Bot completo]
+   🤖 bot_hyperliquid.py       → Script principal
+   📁 bot/ (pasta)             → Módulos (6 arquivos)
+   📦 requirements.txt         → Dependências
+   ⚙️  .env.configured         → Suas credenciais
+
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  📞 PRÓXIMOS PASSOS                                                          │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+1. Baixar todos os arquivos ✅
+2. Ler README_RAILWAY.md 📖
+3. Seguir o guia passo-a-passo 👣
+4. Bot rodando 24/7! 🚀
+
+═══════════════════════════════════════════════════════════════════════════════
+
+💬 DÚVIDAS? Consulte README_RAILWAY.md (muito completo!)
+
+🎯 SEU BOT JÁ ESTÁ OPERANDO AQUI NO CHAT!
+   • 3 posições abertas (ETH, AAVE, SOL)
+   • Todas em lucro! (+$1.28 total)
+   • Mas quando fechar essa conversa, para!
+   
+🚀 NO RAILWAY = RODA PARA SEMPRE!
+
+═══════════════════════════════════════════════════════════════════════════════
+
+Criado com ❤️ por Claude Code
+Data: 24 de Novembro de 2024
+
+Bons trades! 📈🚀

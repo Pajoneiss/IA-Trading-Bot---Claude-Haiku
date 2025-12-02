@@ -1,0 +1,67 @@
+# =========================================================================
+# VARIÁVEIS DE AMBIENTE PARA RAILWAY
+# =========================================================================
+#
+# INSTRUÇÕES:
+# 1. Acesse seu projeto no Railway
+# 2. Vá em "Variables"
+# 3. Clique "+ New Variable"
+# 4. Copie o NOME da variável (lado esquerdo do =)
+# 5. Copie o VALOR da variável (lado direito do =)
+# 6. Repita para TODAS as variáveis abaixo
+#
+# ⚠️ ATENÇÃO: Copie EXATAMENTE como está (sem espaços extras)
+#
+# =========================================================================
+
+# === HYPERLIQUID CREDENTIALS ===
+HYPERLIQUID_WALLET_ADDRESS=your_wallet_address_here
+HYPERLIQUID_PRIVATE_KEY=your_private_key_here
+HYPERLIQUID_NETWORK=mainnet
+
+# === AI (CLAUDE) ===
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
+AI_MODEL=claude-3-5-haiku-20241022
+
+# === TRADING SETTINGS ===
+LIVE_TRADING=true
+PAIRS_TO_TRADE=BTC,ETH,SOL
+
+# === RISK MANAGEMENT ===
+RISK_PER_TRADE_PCT=2.0
+MAX_DAILY_DRAWDOWN_PCT=10.0
+MAX_OPEN_TRADES=3
+MAX_LEVERAGE=50
+MIN_NOTIONAL=0.5
+
+# === STOP/TAKE PROFIT ===
+DEFAULT_STOP_PCT=2.0
+DEFAULT_TP_PCT=4.0
+
+# === BOT CONFIGURATION ===
+TRADING_LOOP_SLEEP_SECONDS=30
+LOG_LEVEL=INFO
+
+# =========================================================================
+# TOTAL: 16 variáveis
+# =========================================================================
+#
+# ✅ CHECKLIST - Marque conforme adiciona no Railway:
+# [ ] HYPERLIQUID_WALLET_ADDRESS
+# [ ] HYPERLIQUID_PRIVATE_KEY
+# [ ] HYPERLIQUID_NETWORK
+# [ ] ANTHROPIC_API_KEY
+# [ ] AI_MODEL
+# [ ] LIVE_TRADING
+# [ ] PAIRS_TO_TRADE
+# [ ] RISK_PER_TRADE_PCT
+# [ ] MAX_DAILY_DRAWDOWN_PCT
+# [ ] MAX_OPEN_TRADES
+# [ ] MAX_LEVERAGE
+# [ ] MIN_NOTIONAL
+# [ ] DEFAULT_STOP_PCT
+# [ ] DEFAULT_TP_PCT
+# [ ] TRADING_LOOP_SLEEP_SECONDS
+# [ ] LOG_LEVEL
+#
+# =========================================================================
