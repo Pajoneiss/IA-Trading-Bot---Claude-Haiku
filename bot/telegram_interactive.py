@@ -236,6 +236,13 @@ class TelegramInteractive:
                 
             positions = self.main_bot.position_manager.get_all_positions(current_prices=prices)
             
+            # PATCH: Enriquece com dados reais da Hyperliquid
+            try:
+                exchange_positions = self.main_bot.client.get_positions()
+                positions = self.main_bot.position_manager.enrich_with_exchange_data(positions, exchange_positions)
+            except Exception as e:
+                pass  # Se falhar, usa dados do PositionManager mesmo
+            
             if not positions:
                 self.bot.send_message(chat_id, "🤷‍♂️ Nenhuma posição aberta no momento.")
                 return
@@ -269,11 +276,26 @@ class TelegramInteractive:
                     side = p['side'].upper()
                     entry = p['entry_price']
                     pnl = p.get('unrealized_pnl_pct', 0)
-                    lev = p.get('leverage', 1)
+                    
+                    # PATCH: Formata leverage usando dados reais
+                    leverage_type = p.get('leverage_type', 'unknown')
+                    margin_used = p.get('margin_used', 0)
+                    size = p.get('size', 0)
+                    notional = p.get('notional', size * entry)
+                    
+                    if leverage_type == 'cross':
+                        lev_str = "1x (CROSS)"
+                    elif leverage_type == 'isolated' and margin_used > 0:
+                        effective_lev = notional / margin_used
+                        lev_str = f"{effective_lev:.0f}x (ISOLATED)"
+                    else:
+                        # Fallback
+                        lev = p.get('leverage', 1)
+                        lev_str = f"{lev}x"
                     
                     emoji = "🟢" if pnl > 0 else "🔴"
                     text += (
-                        f"{emoji} `{symbol}` {side} {lev}x\n"
+                        f"{emoji} `{symbol}` {side} {lev_str}\n"
                         f"   Entry: ${entry:.4f} | PnL: {pnl:+.2f}%\n"
                     )
                 return text

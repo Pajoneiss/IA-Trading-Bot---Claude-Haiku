@@ -119,12 +119,11 @@ class TelegramNotifier:
         side: str,
         entry_price: float,
         size: float,
-        leverage: int,
+        leverage_display: str,  # PATCH: Agora recebe string já formatada (ex: "5x (ISOLATED)")
         strategy: str,
         confidence: float,
         reason: str = "",
-        source: str = "claude_swing",
-        margin_type: str = "ISOLATED"
+        source: str = "claude_swing"
     ):
         """Notifica abertura de posição"""
         if not self.notify_on_open:
@@ -150,7 +149,7 @@ class TelegramNotifier:
             f"🧠 Origem IA: `{source_display}`\n"
             f"💰 Entry: `${entry_price:,.4f}`\n"
             f"📦 Size: `{size:.4f}`\n"
-            f"⚡ Leverage: `{leverage}x` ({margin_type})\n"
+            f"⚡ Leverage: `{leverage_display}`\n"  # PATCH: Usa string formatada
             f"🎯 Estratégia: `{strategy.upper()}`\n"
             f"📊 Confiança: `{conf_display}`\n"
         )
@@ -330,18 +329,20 @@ class TelegramNotifier:
                 pnl_pct = pos.get('unrealized_pnl_pct', 0)
                 pnl_usd = pos.get('unrealized_pnl', 0)
                 
-                # Correção de Leverage
-                leverage = pos.get('leverage')
-                if not leverage:
-                    # Tenta inferir
-                    margin_used = pos.get('margin_used', 0)
-                    notional = size * entry_price
-                    if margin_used > 0:
-                        leverage = int(notional / margin_used)
-                    else:
-                        leverage = "Cross"
+                # PATCH: Formata leverage usando dados reais
+                leverage_type = pos.get('leverage_type', 'unknown')
+                margin_used = pos.get('margin_used', 0)
+                notional = pos.get('notional', size * entry_price)
                 
-                lev_str = f"{leverage}x" if isinstance(leverage, (int, float)) else str(leverage)
+                if leverage_type == 'cross':
+                    lev_str = "1x (CROSS)"
+                elif leverage_type == 'isolated' and margin_used > 0:
+                    effective_lev = notional / margin_used
+                    lev_str = f"{effective_lev:.0f}x (ISOLATED)"
+                else:
+                    # Fallback
+                    leverage = pos.get('leverage', 1)
+                    lev_str = f"{leverage}x"
                 
                 side_emoji = "📈" if str(side).lower() == 'long' else "📉"
                 pnl_indicator = "🟢" if pnl_pct > 0 else "🔴" if pnl_pct < 0 else "⚪"

@@ -306,6 +306,40 @@ class PositionManager:
             
         return positions_list
     
+    def enrich_with_exchange_data(self, positions_list: List[Dict[str, Any]], 
+                                   exchange_positions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        PATCH: Enriquece posições com dados reais da Hyperliquid
+        
+        Adiciona: leverage_type, margin_used, notional para exibição correta
+        
+        Args:
+            positions_list: Lista de posições do PositionManager
+            exchange_positions: Lista de posições da Hyperliquid (com leverage_type, margin_used, etc)
+        
+        Returns:
+            Lista enriquecida com dados reais
+        """
+        enriched = []
+        
+        for pos in positions_list:
+            symbol = pos['symbol']
+            # Busca correspondente na exchange
+            exchange_pos = next(
+                (p for p in exchange_positions if p['coin'] == symbol),
+                None
+            )
+            
+            if exchange_pos:
+                # Adiciona dados reais da Hyperliquid
+                pos['leverage_type'] = exchange_pos.get('leverage_type', 'unknown')
+                pos['margin_used'] = exchange_pos.get('margin_used', 0)
+                pos['notional'] = exchange_pos.get('notional', pos['size'] * pos['entry_price'])
+            
+            enriched.append(pos)
+        
+        return enriched
+    
     def get_positions_count(self) -> int:
         """Retorna número de posições abertas"""
         return len(self.positions)
