@@ -196,6 +196,13 @@ class TelegramInteractivePRO:
             except Exception as e:
                 logger.error(f"[TELEGRAM] Erro em IA Info: {e}")
         
+        @self.bot.message_handler(func=lambda m: m.text and m.text == "🎚️ Modo")
+        def handle_modo_button(message):
+            try:
+                self._send_modo_menu(message.chat.id)
+            except Exception as e:
+                logger.error(f"[TELEGRAM] Erro em Modo: {e}")
+        
         # === PHASE 4: COMANDOS DE PERFORMANCE ===
         @self.bot.message_handler(commands=['pnl'])
         def handle_pnl_command(message):
@@ -260,13 +267,13 @@ class TelegramInteractivePRO:
         keyboard.row(
             types.KeyboardButton(pause_text),
             types.KeyboardButton("🛑 Fechar Todas"),
-            types.KeyboardButton("📰 Notícias")
+            types.KeyboardButton("🎚️ Modo")  # Phase 5: Botão de Modo
         )
         
-        # Linha 3: Mercado e IA
+        # Linha 3: Informações
         keyboard.row(
+            types.KeyboardButton("📰 Notícias"),
             types.KeyboardButton("💹 Mercado"),
-            types.KeyboardButton("📅 Calendário"),
             types.KeyboardButton("🧠 IA Info")
         )
         
@@ -1221,16 +1228,15 @@ class TelegramInteractivePRO:
         try:
             from bot.phase5 import TradingMode, TradingModeConfig, TradingModeManager
             
-            # Pega modo atual do bot principal
+            # Tenta pegar modo manager do bot principal
             mode_manager = getattr(self.main_bot, 'mode_manager', None)
             
+            # Se não tiver, cria um temporário (para poder testar)
             if not mode_manager:
-                self.bot.send_message(
-                    chat_id,
-                    "⚠️ Sistema de modos não disponível",
-                    parse_mode=None
-                )
-                return
+                logger.warning("[TELEGRAM] mode_manager não encontrado no bot, criando temporário")
+                mode_manager = TradingModeManager()
+                # Salva no bot para próxima vez
+                self.main_bot.mode_manager = mode_manager
             
             current_mode = mode_manager.get_current_mode()
             current_config = mode_manager.get_current_config()
@@ -1295,18 +1301,16 @@ class TelegramInteractivePRO:
             mode_name: Nome do modo (CONSERVADOR, BALANCEADO, AGRESSIVO)
         """
         try:
-            from bot.phase5 import TradingMode, TradingModeConfig
+            from bot.phase5 import TradingMode, TradingModeConfig, TradingModeManager
             
             # Pega mode manager do bot principal
             mode_manager = getattr(self.main_bot, 'mode_manager', None)
             
+            # Se não tiver, cria um
             if not mode_manager:
-                self.bot.send_message(
-                    chat_id,
-                    "⚠️ Sistema de modos não disponível",
-                    parse_mode=None
-                )
-                return
+                logger.warning("[TELEGRAM] mode_manager não encontrado, criando novo")
+                mode_manager = TradingModeManager()
+                self.main_bot.mode_manager = mode_manager
             
             # Converte string para enum
             try:
