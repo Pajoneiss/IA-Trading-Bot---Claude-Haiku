@@ -766,6 +766,33 @@ class HyperliquidBot:
                     funding_rate=funding
                 )
                 
+                # ========== PHASE 2: TECHNICAL ANALYSIS ==========
+                from bot.phase2 import TechnicalAnalysis
+                
+                if not hasattr(self, 'technical_analysis'):
+                    self.technical_analysis = TechnicalAnalysis()
+                
+                # Análise de estrutura
+                structure = self.technical_analysis.analyze_structure(candles, "15m")
+                
+                # Padrões
+                patterns = self.technical_analysis.detect_patterns(candles)
+                
+                # EMA confluence (opcional)
+                ema = self.technical_analysis.check_ema_confluence(candles)
+                
+                # Liquidez
+                liquidity = self.technical_analysis.identify_liquidity_zones(candles)
+                
+                # Adiciona ao contexto
+                context['phase2'] = {
+                    'structure': structure,
+                    'patterns': patterns,
+                    'ema': ema,
+                    'liquidity': liquidity
+                }
+                # ================================================
+                
                 market_contexts.append(context)
                 
             except Exception as e:
@@ -778,6 +805,51 @@ class HyperliquidBot:
         # 5. Verificar stops/TPs das posições abertas
         self.logger.info("🎯 Verificando stops/TPs...")
         self.position_manager.log_positions_summary(all_prices)
+        
+        # ========== PHASE 2: POSITION MANAGER PRO ==========
+        # Gestão avançada: breakeven, parciais, trailing
+        from bot.phase2 import PositionManagerPro
+        
+        # Instancia Position Manager Pro (singleton-like)
+        if not hasattr(self, 'position_manager_pro'):
+            self.position_manager_pro = PositionManagerPro(
+                position_manager=self.position_manager,
+                config={
+                    'breakeven_at_r': 1.0,
+                    'partial_at_r': 2.0,
+                    'partial_pct': 0.5,
+                    'trailing_at_r': 3.0,
+                    'trailing_distance_pct': 1.0
+                }
+            )
+        
+        # Analisa cada posição para gestão
+        management_decisions = []
+        for position_dict in self.position_manager.get_all_positions():
+            symbol = position_dict['symbol']
+            current_price = all_prices.get(symbol)
+            
+            if not current_price:
+                continue
+            
+            # Converte para float
+            try:
+                current_price = float(current_price)
+            except:
+                continue
+            
+            # Analisa e sugere gestão
+            manage_suggestion = self.position_manager_pro.analyze_position(
+                symbol=symbol,
+                current_price=current_price
+            )
+            
+            if manage_suggestion:
+                management_decisions.append(manage_suggestion)
+                self.logger.info(f"[PHASE2 PRO] 💎 Gestão sugerida para {symbol}: "
+                               f"{manage_suggestion['manage_decision']['reason']}")
+        
+        # ================================================
         
         close_actions = self.position_manager.check_stops(all_prices)
         
@@ -901,8 +973,61 @@ class HyperliquidBot:
                 # Limpa cache antigo se não houve novas decisões, para não repetir trades velhos
                 self.last_scalp_decisions = []
         
-        # Combina decisões de ambos os motores
-        ai_decisions = swing_decisions + scalp_decisions
+        # Combina decisões de ambos os motores + gestão de posição
+        ai_decisions = swing_decisions + scalp_decisions + management_decisions
+        
+        # ========== PHASE 2: PARSE & QUALITY GATE ==========
+        from bot.phase2 import DecisionParser, QualityGate
+        
+        # Instancia Quality Gate (singleton-like)
+        if not hasattr(self, 'quality_gate'):
+            self.quality_gate = QualityGate({
+                'min_confidence': 0.80,
+                'max_candle_body_pct': 3.0,
+                'min_confluences': 2
+            })
+        
+        # Parse e valida todas as decisões
+        validated_decisions = []
+        for raw_decision in ai_decisions:
+            # Parse com validação
+            parsed = DecisionParser.parse_ai_decision(raw_decision, raw_decision.get('source', 'unknown'))
+            
+            if not parsed:
+                self.logger.warning(f"[PHASE2] Decisão inválida ignorada: {raw_decision.get('symbol', 'UNKNOWN')}")
+                continue
+            
+            # Sanitiza (remove NaN/None)
+            parsed = DecisionParser.sanitize_decision(parsed)
+            
+            # Quality Gate (só para action=open)
+            if parsed.get('action') == 'open':
+                # Busca contexto de mercado e MI
+                symbol = parsed.get('symbol')
+                market_ctx = market_snapshot.get(symbol, {})
+                
+                # Avalia Quality Gate
+                gate_result = self.quality_gate.evaluate(
+                    decision=parsed,
+                    market_context=market_ctx,
+                    market_intelligence=None  # TODO: integrar MI
+                )
+                
+                if not gate_result.approved:
+                    # REJEITADO
+                    self.quality_gate.log_rejection(symbol, gate_result)
+                    self.logger.warning(f"[PHASE2] 🚫 {symbol} rejeitado pelo Quality Gate")
+                    continue
+                
+                # APROVADO - atualiza confidence ajustada
+                parsed['confidence'] = gate_result.confidence_score
+                self.logger.info(f"[PHASE2] ✅ {symbol} aprovado: confidence={gate_result.confidence_score:.2f}")
+            
+            validated_decisions.append(parsed)
+        
+        # Substitui decisões originais pelas validadas
+        ai_decisions = validated_decisions
+        # ================================================
         
         # 7. Executar decisões da IA
         for decision in ai_decisions:
