@@ -471,18 +471,6 @@ class HyperliquidBot:
         self.openai_enabled = bool(config.get('openai_api_key'))
         if not self.openai_enabled:
             self.logger.info("[AI] OpenAI SCALP desativado: OPENAI_API_KEY não configurada.")
-        
-        # ========== LIMITE DE CAPITAL POR TRADE (5%) ==========
-        # Lê MAX_EQUITY_PER_TRADE_PCT do ambiente
-        max_equity_str = os.getenv('MAX_EQUITY_PER_TRADE_PCT', '0.05')
-        try:
-            self.max_equity_per_trade_pct = float(max_equity_str)
-            if self.max_equity_per_trade_pct <= 0:
-                self.logger.warning(f"MAX_EQUITY_PER_TRADE_PCT inválido ({max_equity_str}), usando default 0.05")
-                self.max_equity_per_trade_pct = 0.05
-        except (ValueError, TypeError):
-            self.logger.warning(f"MAX_EQUITY_PER_TRADE_PCT não numérico ({max_equity_str}), usando default 0.05")
-            self.max_equity_per_trade_pct = 0.05
         # ================================================
         
         self.logger.info("=" * 60)
@@ -492,7 +480,6 @@ class HyperliquidBot:
         self.logger.info(f"Pares: {', '.join(self.trading_pairs)}")
         self.logger.info(f"IA: {'Ativada ✅' if config.get('anthropic_api_key') else 'Desativada (fallback)'}")
         self.logger.info(f"🛡️ Anti-Overtrading: cooldown={self.action_cooldown_seconds}s, min_conf_adjust={self.min_confidence_adjust}")
-        self.logger.info(f"💰 MAX_EQUITY_PER_TRADE_PCT: {self.max_equity_per_trade_pct} ({self.max_equity_per_trade_pct*100:.1f}%)")
         self.logger.info(f"📱 Telegram: {'Ativado ✅' if self.telegram.enabled else 'Desativado'}")
         self.logger.info(f"🧠 IA SWING chamada a cada: {self.ai_call_interval // 60} minutos")
         if self.openai_enabled:
@@ -1149,35 +1136,6 @@ class HyperliquidBot:
         except:
             self.logger.error(f"{symbol}: Preço inválido")
             return False
-        
-        # ========== LIMITE DE 5% DA EQUITY POR TRADE ==========
-        current_equity = self.risk_manager.current_equity
-        max_capital_per_trade = current_equity * self.max_equity_per_trade_pct
-        
-        # Verifica se size_usd excede o limite
-        if size_usd > max_capital_per_trade:
-            # Tenta reduzir para o máximo permitido
-            original_size_usd = size_usd
-            size_usd = max_capital_per_trade
-            
-            # Verifica se o tamanho reduzido ainda atende o mínimo notional
-            min_notional = self.risk_manager.min_notional
-            if size_usd < min_notional:
-                self.logger.error(
-                    f"[RISK] Trade bloqueado: required ${original_size_usd:.2f} > "
-                    f"max trade capital ${max_capital_per_trade:.2f} "
-                    f"(MAX_EQUITY_PER_TRADE_PCT={self.max_equity_per_trade_pct}). "
-                    f"Tamanho reduzido ${size_usd:.2f} < min notional ${min_notional:.2f}"
-                )
-                return False
-            
-            self.logger.warning(
-                f"[RISK] Reduzindo trade size de ${original_size_usd:.2f} para "
-                f"${size_usd:.2f} (MAX_EQUITY_PER_TRADE_PCT limit)"
-            )
-        
-        # ======================================================
-
 
         # 1. Define multiplicador de risco baseado no estilo
         risk_multiplier = 1.0
@@ -1267,59 +1225,40 @@ class HyperliquidBot:
                 leverage=leverage
             )
             
+            self.logger.info(f"✅ Ordem executada: {result}")
             
-            self.logger.info(f"📋 Resposta da Hyperliquid: {result}")
-            
-            # ========== GHOST ORDER PREVENTION ==========
-            # Valida resposta ANTES de atualizar estado interno
-            status = result.get('status')
-            
-            if status != 'ok' and status != 'success':
-                # Ordem REJEITADA pela Hyperliquid
-                error_msg = result.get('response', result.get('error', 'Unknown error'))
-                self.logger.error(f"[GHOST_ORDER_PREVENTION] ❌ Ordem rejeitada pela Hyperliquid!")
-                self.logger.error(f"[GHOST_ORDER_PREVENTION] Símbolo: {symbol}, Side: {side}, Size: {size}")
-                self.logger.error(f"[GHOST_ORDER_PREVENTION] Erro: {error_msg}")
-                self.logger.error(f"[GHOST_ORDER_PREVENTION] Resposta completa: {result}")
+            # Verifica sucesso
+            if result.get('status') == 'ok':
+                self.logger.info(f"✅ Posição ISOLATED adicionada: {symbol} {side.upper()}")
+                self.position_manager.add_position(
+                    symbol=symbol,
+                    side=side,
+                    entry_price=current_price,
+                    size=size,
+                    leverage=leverage,
+                    stop_loss_pct=stop_loss_pct,
+                    take_profit_pct=take_profit_pct,
+                    strategy=strategy
+                )
                 
-                # NÃO atualiza position_manager
-                # NÃO envia notificação Telegram
+                # 📱 Notifica via Telegram com informações completas
+                self.telegram.notify_position_opened(
+                    symbol=symbol,
+                    side=side,
+                    entry_price=current_price,
+                    size=size,
+                    leverage=leverage,
+                    strategy=strategy,
+                    confidence=confidence,
+                    reason=reason,
+                    source=source,
+                    margin_type="ISOLATED"  # PARTE 6: Mostrar margem no Telegram
+                )
+                return True
+
+            else:
+                self.logger.error(f"❌ Falha ao abrir posição: {result}")
                 return False
-            
-            # Ordem CONFIRMADA - pode atualizar estado
-            self.logger.info(f"✅ Ordem confirmada pela Hyperliquid: {symbol} {side.upper()}")
-            # ============================================
-            
-            # Adiciona ao gerenciador de posições
-            self.position_manager.add_position(
-                symbol=symbol,
-                side=side,
-                entry_price=current_price,
-                size=size,
-                leverage=leverage,
-                stop_loss_pct=stop_loss_pct,
-                take_profit_pct=take_profit_pct,
-                strategy=strategy
-            )
-            
-            # 📱 Notifica via Telegram com informações completas
-            self.telegram.notify_position_opened(
-                symbol=symbol,
-                side=side,
-                entry_price=current_price,
-                size=size,
-                leverage=leverage,
-                strategy=strategy,
-                confidence=confidence,
-                reason=reason,
-                source=source,
-                margin_type="ISOLATED"  # PARTE 6: Mostrar margem no Telegram
-            )
-            
-            # Marca cooldown
-            self._set_cooldown(symbol)
-            
-            return True
                 
         except Exception as e:
             self.logger.error(f"❌ Erro crítico ao executar ordem: {e}", exc_info=True)

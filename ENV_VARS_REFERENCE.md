@@ -22,7 +22,6 @@ Este documento lista todas as variáveis de ambiente necessárias para rodar o b
 | **MIN_NOTIONAL** | Tamanho mínimo da ordem em USD | `bot_hyperliquid.py` | ✅ Sim |
 | **DEFAULT_STOP_PCT** | Stop Loss padrão (%) | `bot_hyperliquid.py` | ✅ Sim |
 | **DEFAULT_TP_PCT** | Take Profit padrão (%) | `bot_hyperliquid.py` | ✅ Sim |
-| **MAX_EQUITY_PER_TRADE_PCT** | % máximo da banca por trade (ex: 0.05 = 5%) | `bot_hyperliquid.py` | ⚠️ Opcional (default: 0.05) |
 | **TRADING_LOOP_SLEEP_SECONDS** | Intervalo entre análises (segundos) | `bot_hyperliquid.py` | ✅ Sim |
 | **LOG_LEVEL** | Nível de log (`INFO`, `DEBUG`) | `bot_hyperliquid.py` | ⚠️ Opcional |
 

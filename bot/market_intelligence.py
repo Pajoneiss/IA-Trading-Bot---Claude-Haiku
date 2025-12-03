@@ -28,14 +28,12 @@ class MarketIntelligence:
         Returns:
             {
                 'fear_greed': 23,
-                'fear_greed_available': True,
                 'sentiment': 'extreme_fear',
                 'btc_dominance': 52.3,
                 'eth_dominance': 16.8,
                 'is_alt_season': False,
                 'is_bitcoin_season': True,
                 'alt_season_index': 38,
-                'alt_season_available': True,
                 'total_market_cap': 3240000000000,
                 'volume_24h': 180500000000,
                 'critical_events_today': [...],
@@ -47,7 +45,6 @@ class MarketIntelligence:
             context = {
                 # Sentimento
                 'fear_greed': self._get_fear_greed(),
-                'fear_greed_available': not self._is_fallback('fear_greed'),
                 'sentiment': self._interpret_sentiment(),
                 
                 # Dominância
@@ -56,7 +53,6 @@ class MarketIntelligence:
                 
                 # Fase do mercado
                 'alt_season_index': self._get_alt_season_index(),
-                'alt_season_available': not self._is_fallback('alt_season'),
                 'is_alt_season': self._is_alt_season(),
                 'is_bitcoin_season': self._is_bitcoin_season(),
                 
@@ -93,19 +89,14 @@ class MarketIntelligence:
         try:
             url = "https://api.alternative.me/fng/"
             response = requests.get(url, timeout=5)
-            response.raise_for_status()
             data = response.json()
             
             value = int(data['data'][0]['value'])
-            self._set_cache(cache_key, value, is_fallback=False)
-            logger.info(f"[MARKET_INTEL] Fear & Greed atualizado: {value}/100")
+            self._set_cache(cache_key, value)
             return value
             
         except Exception as e:
-            logger.warning(f"[MARKET_INTEL] Erro ao buscar Fear & Greed (Alternative.me): {e}")
-            logger.warning(f"[MARKET_INTEL] Usando valor neutro (50) como fallback")
-            # Mark as fallback
-            self._set_cache(cache_key, 50, is_fallback=True)
+            logger.warning(f"[MARKET_INTEL] Erro ao buscar Fear & Greed: {e}")
             return 50  # Neutro
     
     def _interpret_sentiment(self) -> str:
@@ -179,19 +170,14 @@ class MarketIntelligence:
         try:
             url = "https://api.blockchaincenter.net/v1/altseason/now"
             response = requests.get(url, timeout=5)
-            response.raise_for_status()
             data = response.json()
             
             value = int(data['data']['altseason_index'])
-            self._set_cache(cache_key, value, is_fallback=False)
-            logger.info(f"[MARKET_INTEL] Altcoin Season Index atualizado: {value}/100")
+            self._set_cache(cache_key, value)
             return value
             
         except Exception as e:
-            logger.warning(f"[MARKET_INTEL] Erro ao buscar Alt Season Index (BlockchainCenter): {e}")
-            logger.warning(f"[MARKET_INTEL] Usando valor neutro (50) como fallback")
-            # Mark as fallback
-            self._set_cache(cache_key, 50, is_fallback=True)
+            logger.warning(f"[MARKET_INTEL] Erro ao buscar Alt Season: {e}")
             return 50
     
     def _is_alt_season(self) -> bool:
@@ -348,18 +334,11 @@ class MarketIntelligence:
         age = (datetime.utcnow() - cached_at).total_seconds()
         return age < self.cache_duration
     
-    def _is_fallback(self, key: str) -> bool:
-        """Verifica se valor em cache é fallback"""
-        if key not in self.cache:
-            return True
-        return self.cache[key].get('is_fallback', False)
-    
-    def _set_cache(self, key: str, value: Any, is_fallback: bool = False):
-        """Salva no cache com metadata"""
+    def _set_cache(self, key: str, value: Any):
+        """Salva no cache"""
         self.cache[key] = {
             'value': value,
-            'timestamp': datetime.utcnow(),
-            'is_fallback': is_fallback
+            'timestamp': datetime.utcnow()
         }
     
     def _get_fallback_context(self) -> Dict:

@@ -308,16 +308,15 @@ class TelegramInteractivePRO:
     def _send_posicoes(self, chat_id):
         """📈 Posições Abertas"""
         try:
-            # Busca posições REAIS da Hyperliquid
+            # Busca preços atuais
             try:
-                real_positions = self.main_bot.client.get_positions()
                 prices = self.main_bot.client.get_all_mids()
-            except Exception as e:
-                logger.error(f"[TELEGRAM] Erro ao buscar posições da Hyperliquid: {e}")
-                self.bot.send_message(chat_id, "❌ Erro ao conectar com Hyperliquid.")
-                return
+            except:
+                prices = {}
             
-            if not real_positions:
+            positions = self.main_bot.position_manager.get_all_positions(current_prices=prices)
+            
+            if not positions:
                 msg = (
                     "📈 *POSIÇÕES ABERTAS*\n\n"
                     "Nenhuma posição aberta no momento.\n\n"
@@ -329,77 +328,45 @@ class TelegramInteractivePRO:
             
             msg = f"📈 *POSIÇÕES ABERTAS*\n\n"
             
-            total_pnl_usd = 0.0
+            total_pnl = 0.0
             
-            for i, pos in enumerate(real_positions, 1):
-                # Dados da Hyperliquid API
+            for i, pos in enumerate(positions, 1):
                 coin = pos.get('coin', 'UNKNOWN')
-                size = pos.get('size', 0)  # Size em coins (pode ser negativo para SHORT)
-                entry_price = pos.get('entry_price', 0)
-                unrealized_pnl = pos.get('unrealized_pnl', 0)
-                leverage = pos.get('leverage', 1)
+                side = pos.get('side', 'unknown').upper()
+                size_usd = pos.get('size_usd', 0)
+                entry = pos.get('entry_price', 0)
+                current = pos.get('current_price', entry)
+                pnl = pos.get('unrealized_pnl', 0)
+                pnl_pct = (pnl / size_usd * 100) if size_usd > 0 else 0
                 
-                # Determina side baseado no sinal do size
-                if size > 0:
-                    side = "LONG"
-                    size_abs = size
-                elif size < 0:
-                    side = "SHORT"
-                    size_abs = abs(size)
-                else:
-                    continue  # Skip posições com size 0
-                
-                # Busca preço atual
-                current_price = prices.get(coin, entry_price)
-                if isinstance(current_price, str):
-                    current_price = float(current_price)
-                
-                # Calcula notional (tamanho em USD)
-                size_usd = size_abs * current_price
-                
-                # Calcula PnL % baseado no entry vs current
-                if entry_price > 0:
-                    if side == "LONG":
-                        pnl_pct = ((current_price - entry_price) / entry_price) * 100
-                    else:  # SHORT
-                        pnl_pct = ((entry_price - current_price) / entry_price) * 100
-                else:
-                    pnl_pct = 0
-                
-                # Busca timestamp de abertura do position_manager (se disponível)
-                time_str = "—"
-                managed_pos = self.main_bot.position_manager.get_position(coin)
-                if managed_pos and hasattr(managed_pos, 'opened_at'):
+                # Calcula há quanto tempo está aberta
+                opened_at = pos.get('opened_at')
+                if opened_at:
                     try:
-                        delta = datetime.utcnow() - managed_pos.opened_at
-                        days = delta.days
+                        delta = datetime.utcnow() - opened_at
                         hours = delta.seconds // 3600
                         minutes = (delta.seconds % 3600) // 60
-                        
-                        if days > 0:
-                            time_str = f"{days}d {hours}h"
-                        else:
-                            time_str = f"{hours}h {minutes}m"
+                        time_str = f"{hours}h {minutes}m"
                     except:
-                        time_str = "—"
+                        time_str = "?"
+                else:
+                    time_str = "?"
                 
-                # Formata mensagem
                 msg += f"{i}. *{coin}/USDT {side}*\n"
-                msg += f"   💰 Tamanho: {size_abs:.4f} {coin} (~${size_usd:.2f})\n"
-                msg += f"   📊 Entry: `${entry_price:.4f}`\n"
-                msg += f"   💹 Atual: `${current_price:.4f}` ({pnl_pct:+.2f}%)\n"
-                msg += f"   💵 PnL: `${unrealized_pnl:+.2f}` ({pnl_pct:+.2f}%)\n"
-                msg += f"   ⚡ Alavancagem: {leverage}x\n"
+                msg += f"   💰 Tamanho: `${size_usd:.2f}`\n"
+                msg += f"   📊 Entry: `${entry:.4f}`\n"
+                msg += f"   💹 Atual: `${current:.4f}` ({pnl_pct:+.2f}%)\n"
+                msg += f"   💵 PnL: `${pnl:+.2f}`\n"
                 msg += f"   ⏱️ Aberta há: {time_str}\n\n"
                 
-                total_pnl_usd += unrealized_pnl
+                total_pnl += pnl
             
-            msg += f"💰 *PnL Total Não-Realizado:* `${total_pnl_usd:+.2f}`"
+            msg += f"💰 *PnL Total Não-Realizado:* `${total_pnl:+.2f}`"
             
             self.bot.send_message(chat_id, msg)
             
         except Exception as e:
-            logger.error(f"[TELEGRAM] Erro ao enviar posições: {e}", exc_info=True)
+            logger.error(f"[TELEGRAM] Erro ao enviar posições: {e}")
             self.bot.send_message(chat_id, "❌ Erro ao obter posições.")
     
     # ========== BOTÃO 3: PNL ==========
@@ -601,33 +568,23 @@ class TelegramInteractivePRO:
             
             # Fear & Greed
             fg = context['fear_greed']
-            fg_available = context.get('fear_greed_available', True)
-            
-            if fg_available:
-                fg_emoji = "😱" if fg < 25 else ("😰" if fg < 45 else ("😐" if fg < 55 else ("😊" if fg < 75 else "🤑")))
-                fg_text = context['sentiment'].replace('_', ' ').title()
-                msg += f"{fg_emoji} Fear & Greed: *{fg}/100* ({fg_text})\n"
-            else:
-                msg += f"😐 Fear & Greed: *Indisponível* (usando neutro)\n"
+            fg_emoji = "😱" if fg < 25 else ("😰" if fg < 45 else ("😐" if fg < 55 else ("😊" if fg < 75 else "🤑")))
+            fg_text = context['sentiment'].replace('_', ' ').title()
+            msg += f"{fg_emoji} Fear & Greed: *{fg}/100* ({fg_text})\n"
             
             # Alt Season
             alt_idx = context['alt_season_index']
-            alt_available = context.get('alt_season_available', True)
-            
-            if alt_available:
-                if context['is_bitcoin_season']:
-                    season_text = "Bitcoin Season"
-                    season_emoji = "🪙"
-                elif context['is_alt_season']:
-                    season_text = "Alt Season"
-                    season_emoji = "🌊"
-                else:
-                    season_text = "Neutro"
-                    season_emoji = "⚖️"
-                
-                msg += f"{season_emoji} Season Index: *{alt_idx}/100* ({season_text})\n"
+            if context['is_bitcoin_season']:
+                season_text = "Bitcoin Season"
+                season_emoji = "🪙"
+            elif context['is_alt_season']:
+                season_text = "Alt Season"
+                season_emoji = "🌊"
             else:
-                msg += f"⚖️ Season Index: *Indisponível* (usando neutro)\n"
+                season_text = "Neutro"
+                season_emoji = "⚖️"
+            
+            msg += f"{season_emoji} Season Index: *{alt_idx}/100* ({season_text})\n"
             
             self.bot.send_message(chat_id, msg)
             
@@ -675,28 +632,16 @@ class TelegramInteractivePRO:
             msg += "─" * 35 + "\n"
             
             fg = context['fear_greed']
-            fg_available = context.get('fear_greed_available', True)
             fg_text = context['sentiment'].replace('_', ' ').title()
-            
-            if fg_available:
-                msg += f"🎭 Sentimento: *{fg_text}* ({fg}/100)\n"
-            else:
-                msg += f"🎭 Sentimento: *Indisponível* (neutro {fg}/100)\n"
-            
+            msg += f"🎭 Sentimento: *{fg_text}* ({fg}/100)\n"
             msg += f"🪙 BTC Dominância: *{context['btc_dominance']:.1f}%*\n"
             
-            alt_idx = context['alt_season_index']
-            alt_available = context.get('alt_season_available', True)
-            
-            if alt_available:
-                if context['is_bitcoin_season']:
-                    msg += f"🌊 Fase: *Bitcoin Season* ({alt_idx}/100)\n"
-                elif context['is_alt_season']:
-                    msg += f"🌊 Fase: *Alt Season* ({alt_idx}/100)\n"
-                else:
-                    msg += f"🌊 Fase: *Neutro* ({alt_idx}/100)\n"
+            if context['is_bitcoin_season']:
+                msg += f"🌊 Fase: *Bitcoin Season* ({context['alt_season_index']}/100)\n"
+            elif context['is_alt_season']:
+                msg += f"🌊 Fase: *Alt Season* ({context['alt_season_index']}/100)\n"
             else:
-                msg += f"🌊 Fase: *Indisponível* (neutro {alt_idx}/100)\n"
+                msg += f"🌊 Fase: *Neutro* ({context['alt_season_index']}/100)\n"
             
             # Recomendações
             recs = context['recommendations']
