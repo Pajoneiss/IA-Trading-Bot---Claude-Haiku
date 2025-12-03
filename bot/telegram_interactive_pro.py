@@ -196,6 +196,23 @@ class TelegramInteractivePRO:
             except Exception as e:
                 logger.error(f"[TELEGRAM] Erro em IA Info: {e}")
         
+        # === PHASE 4: COMANDOS DE PERFORMANCE ===
+        @self.bot.message_handler(commands=['pnl'])
+        def handle_pnl_command(message):
+            try:
+                self._send_performance_summary(message.chat.id)
+            except Exception as e:
+                logger.error(f"[TELEGRAM] Erro no comando /pnl: {e}")
+                self.bot.send_message(message.chat.id, f"❌ Erro ao gerar PnL: {e}")
+        
+        @self.bot.message_handler(commands=['diario'])
+        def handle_diario_command(message):
+            try:
+                self._send_daily_report(message.chat.id)
+            except Exception as e:
+                logger.error(f"[TELEGRAM] Erro no comando /diario: {e}")
+                self.bot.send_message(message.chat.id, f"❌ Erro ao gerar diário: {e}")
+        
         # Callback handler (para confirmações)
         @self.bot.callback_query_handler(func=lambda call: True)
         def callback_query(call):
@@ -863,6 +880,235 @@ class TelegramInteractivePRO:
         except Exception as e:
             logger.error(f"[TELEGRAM] Erro ao enviar IA Info: {e}")
             self.bot.send_message(chat_id, "❌ Erro ao gerar informações.")
+    
+    # ========== PHASE 4: PERFORMANCE & DIÁRIO ==========
+    
+    def _send_performance_summary(self, chat_id: int):
+        """
+        Envia sumário de performance completo (/pnl)
+        
+        Mostra:
+        - PnL diário, semanal, mensal
+        - Win Rate
+        - RR médio
+        - Profit Factor
+        - Melhor/pior símbolo
+        - Melhor/pior estratégia
+        """
+        try:
+            from bot.phase4 import PerformanceAnalyzer
+            
+            analyzer = PerformanceAnalyzer()
+            
+            # Sumários dos 3 períodos
+            daily = analyzer.get_summary('daily')
+            weekly = analyzer.get_summary('weekly')
+            monthly = analyzer.get_summary('monthly')
+            
+            msg = "📊 *PERFORMANCE SUMMARY*\n"
+            msg += "=" * 30 + "\n\n"
+            
+            # === DIÁRIO ===
+            msg += "📅 *HOJE*\n"
+            msg += f"• Trades: {daily['total_trades']}\n"
+            msg += f"• PnL: ${daily['pnl']['total']:.2f}\n"
+            msg += f"• Win Rate: {daily['win_rate']:.1f}%\n"
+            msg += f"• RR Médio: {daily['avg_rr']:.2f}R\n"
+            msg += f"• Profit Factor: {daily['profit_factor']:.2f}\n"
+            
+            if daily['best_worst']:
+                best_trade = daily['best_worst'].get('best_trade', {})
+                worst_trade = daily['best_worst'].get('worst_trade', {})
+                msg += f"• Melhor: {best_trade.get('symbol', 'N/A')} (${best_trade.get('pnl', 0):.2f})\n"
+                msg += f"• Pior: {worst_trade.get('symbol', 'N/A')} (${worst_trade.get('pnl', 0):.2f})\n"
+            
+            msg += "\n"
+            
+            # === SEMANAL ===
+            msg += "📆 *7 DIAS*\n"
+            msg += f"• Trades: {weekly['total_trades']}\n"
+            msg += f"• PnL: ${weekly['pnl']['total']:.2f}\n"
+            msg += f"• Win Rate: {weekly['win_rate']:.1f}%\n"
+            msg += f"• RR Médio: {weekly['avg_rr']:.2f}R\n"
+            msg += f"• Profit Factor: {weekly['profit_factor']:.2f}\n"
+            
+            if weekly['best_worst']:
+                best_symbol = weekly['best_worst'].get('best_symbol', {})
+                worst_symbol = weekly['best_worst'].get('worst_symbol', {})
+                msg += f"• Melhor símbolo: {best_symbol.get('symbol', 'N/A')} (${best_symbol.get('pnl', 0):.2f})\n"
+                msg += f"• Pior símbolo: {worst_symbol.get('symbol', 'N/A')} (${worst_symbol.get('pnl', 0):.2f})\n"
+            
+            msg += "\n"
+            
+            # === MENSAL ===
+            msg += "📊 *30 DIAS*\n"
+            msg += f"• Trades: {monthly['total_trades']}\n"
+            msg += f"• PnL: ${monthly['pnl']['total']:.2f}\n"
+            msg += f"• Win Rate: {monthly['win_rate']:.1f}%\n"
+            msg += f"• RR Médio: {monthly['avg_rr']:.2f}R\n"
+            msg += f"• Profit Factor: {monthly['profit_factor']:.2f}\n"
+            msg += f"• Avg Duration: {monthly['avg_duration']}\n"
+            
+            if monthly['best_worst']:
+                best_strategy = monthly['best_worst'].get('best_strategy', {})
+                worst_strategy = monthly['best_worst'].get('worst_strategy', {})
+                msg += f"• Melhor estratégia: {best_strategy.get('strategy', 'N/A')} (${best_strategy.get('pnl', 0):.2f})\n"
+                msg += f"• Pior estratégia: {worst_strategy.get('strategy', 'N/A')} (${worst_strategy.get('pnl', 0):.2f})\n"
+            
+            # === QUALITY GATE ===
+            rejection = daily['rejection_rate']
+            msg += f"\n🎯 *QUALITY GATE*\n"
+            msg += f"• Sinais hoje: {rejection['total_signals']}\n"
+            msg += f"• Executados: {rejection['executed']}\n"
+            msg += f"• Rejeitados: {rejection['rejected']} ({rejection['rejection_rate']:.1f}%)\n"
+            msg += f"• Pulados: {rejection['skipped']} ({rejection['skip_rate']:.1f}%)\n"
+            
+            msg += f"\n⏰ {datetime.utcnow().strftime('%d/%m %H:%M')} UTC"
+            
+            self.bot.send_message(chat_id, msg)
+            
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro ao enviar performance summary: {e}", exc_info=True)
+            self.bot.send_message(chat_id, f"❌ Erro ao gerar sumário de performance: {e}")
+    
+    def _send_daily_report(self, chat_id: int):
+        """
+        Envia relatório diário profissional (/diario)
+        
+        Inclui:
+        - Trades fechados
+        - Win Rate
+        - Total realizado
+        - Melhor/pior trade
+        - Melhor estratégia
+        - Observações da IA
+        - Sugestão para próximo dia
+        """
+        try:
+            from bot.phase4 import PerformanceAnalyzer
+            
+            analyzer = PerformanceAnalyzer()
+            daily = analyzer.get_summary('daily')
+            
+            msg = "📖 *DIÁRIO DE TRADING*\n"
+            msg += "=" * 30 + "\n"
+            msg += f"📅 {datetime.utcnow().strftime('%d/%m/%Y')}\n\n"
+            
+            # === RESUMO DO DIA ===
+            msg += "*📊 RESUMO*\n"
+            msg += f"• Trades fechados: {daily['total_trades']}\n"
+            msg += f"• Parciais: {daily['total_partials']}\n"
+            msg += f"• Win Rate: {daily['win_rate']:.1f}%\n"
+            msg += f"• PnL Realizado: ${daily['pnl']['total']:.2f}\n"
+            msg += f"• PnL Médio: ${daily['pnl']['avg']:.2f}\n"
+            msg += f"• RR Médio: {daily['avg_rr']:.2f}R\n"
+            msg += f"• Profit Factor: {daily['profit_factor']:.2f}\n\n"
+            
+            # === DESTAQUES ===
+            if daily['best_worst']:
+                best_worst = daily['best_worst']
+                
+                msg += "*🌟 DESTAQUES*\n"
+                
+                best_trade = best_worst.get('best_trade', {})
+                if best_trade:
+                    msg += f"• Melhor trade: {best_trade.get('symbol', 'N/A')} "
+                    msg += f"(${best_trade.get('pnl', 0):.2f} | {best_trade.get('pnl_pct', 0):.2f}%)\n"
+                
+                worst_trade = best_worst.get('worst_trade', {})
+                if worst_trade:
+                    msg += f"• Pior trade: {worst_trade.get('symbol', 'N/A')} "
+                    msg += f"(${worst_trade.get('pnl', 0):.2f} | {worst_trade.get('pnl_pct', 0):.2f}%)\n"
+                
+                best_strategy = best_worst.get('best_strategy', {})
+                if best_strategy:
+                    msg += f"• Melhor estratégia: {best_strategy.get('strategy', 'N/A')} "
+                    msg += f"(${best_strategy.get('pnl', 0):.2f})\n"
+                
+                msg += "\n"
+            
+            # === OBSERVAÇÕES DA IA ===
+            msg += "*🧠 OBSERVAÇÕES DA IA*\n"
+            
+            # Win rate analysis
+            if daily['win_rate'] >= 70:
+                msg += "✅ Win rate excelente hoje!\n"
+            elif daily['win_rate'] >= 50:
+                msg += "✓ Win rate dentro do esperado\n"
+            else:
+                msg += "⚠️ Win rate abaixo do ideal\n"
+            
+            # RR analysis
+            if daily['avg_rr'] >= 2.0:
+                msg += "✅ RR médio muito bom (≥2R)\n"
+            elif daily['avg_rr'] >= 1.5:
+                msg += "✓ RR médio satisfatório\n"
+            else:
+                msg += "⚠️ RR médio pode melhorar\n"
+            
+            # Profit factor
+            if daily['profit_factor'] >= 2.0:
+                msg += "✅ Profit Factor excelente (≥2.0)\n"
+            elif daily['profit_factor'] >= 1.5:
+                msg += "✓ Profit Factor bom\n"
+            elif daily['profit_factor'] > 0:
+                msg += "⚠️ Profit Factor baixo\n"
+            else:
+                msg += "❌ Profit Factor negativo (perdas > ganhos)\n"
+            
+            # Quality Gate effectiveness
+            rejection = daily['rejection_rate']
+            if rejection['total_signals'] > 0:
+                execution_rate = (rejection['executed'] / rejection['total_signals']) * 100
+                msg += f"\n🎯 Quality Gate executou {execution_rate:.1f}% dos sinais\n"
+                
+                if rejection['rejection_rate'] > 50:
+                    msg += "⚠️ Muitos sinais rejeitados (mercado difícil)\n"
+            
+            msg += "\n"
+            
+            # === SUGESTÃO PARA AMANHÃ ===
+            msg += "*💡 SUGESTÃO PARA AMANHÃ*\n"
+            
+            if daily['total_trades'] == 0:
+                msg += "• Nenhum trade hoje - mercado pode estar em range\n"
+                msg += "• Aguardar setup mais claro\n"
+            elif daily['win_rate'] < 50:
+                msg += "• Focar em qualidade vs quantidade\n"
+                msg += "• Revisar confluências antes de entrar\n"
+                msg += "• Considerar aumentar threshold do Quality Gate\n"
+            elif daily['avg_rr'] < 1.5:
+                msg += "• Deixar trades correrem mais\n"
+                msg += "• Evitar parciais muito cedo\n"
+                msg += "• Aguardar 2R+ antes de sair\n"
+            else:
+                msg += "• Manter a consistência\n"
+                msg += "• Continuar respeitando o Quality Gate\n"
+                msg += "• Focar em setups A+\n"
+            
+            # Market Intelligence para amanhã
+            try:
+                mi = self.market_intel.get_full_data()
+                fg = mi.get('fear_greed', {}).get('value', 50)
+                
+                msg += "\n*🌍 CONTEXTO DE MERCADO*\n"
+                if fg < 30:
+                    msg += "• Fear & Greed baixo - oportunidades em dip\n"
+                elif fg > 70:
+                    msg += "• Fear & Greed alto - cautela com topos\n"
+                else:
+                    msg += "• Fear & Greed neutro - mercado equilibrado\n"
+            except:
+                pass
+            
+            msg += f"\n⏰ {datetime.utcnow().strftime('%d/%m %H:%M')} UTC"
+            msg += "\n\n_Use /pnl para métricas detalhadas_"
+            
+            self.bot.send_message(chat_id, msg)
+            
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro ao enviar daily report: {e}", exc_info=True)
+            self.bot.send_message(chat_id, f"❌ Erro ao gerar diário: {e}")
     
     # ========== HELPERS ==========
     
