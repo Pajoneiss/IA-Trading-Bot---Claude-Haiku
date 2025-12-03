@@ -46,7 +46,7 @@ class PnLTracker:
         try:
             # BUSCA DADOS REAIS DO BOT
             equity = self.main_bot.risk_manager.current_equity
-            initial_equity = self.main_bot.risk_manager.initial_equity
+            starting_equity = self.main_bot.risk_manager.starting_equity_today  # ← CORRIGIDO
             drawdown = self.main_bot.risk_manager.daily_drawdown_pct
             
             # Calcula PnL realizado baseado no drawdown
@@ -58,6 +58,16 @@ class PnLTracker:
             
             # Total
             total_pnl = realized_pnl + unrealized_pnl
+            
+            # Calcula % do total PnL
+            if starting_equity > 0:
+                total_pnl_pct = (total_pnl / starting_equity) * 100
+                realized_pnl_pct = (realized_pnl / starting_equity) * 100
+                unrealized_pnl_pct = (unrealized_pnl / starting_equity) * 100
+            else:
+                total_pnl_pct = 0.0
+                realized_pnl_pct = 0.0
+                unrealized_pnl_pct = 0.0
             
             # Para win rate, usamos dados do histórico se disponível
             # Caso contrário, estimamos baseado no PnL
@@ -88,8 +98,11 @@ class PnLTracker:
             return {
                 'period': period_name,
                 'realized_pnl': realized_pnl,
+                'realized_pnl_pct': realized_pnl_pct,
                 'unrealized_pnl': unrealized_pnl,
+                'unrealized_pnl_pct': unrealized_pnl_pct,
                 'total_pnl': total_pnl,
+                'total_pnl_pct': total_pnl_pct,
                 'win_rate': win_rate,
                 'total_trades': total_trades,
                 'winning_trades': winning_trades,
