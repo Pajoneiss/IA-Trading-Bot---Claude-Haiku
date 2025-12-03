@@ -752,6 +752,10 @@ class HyperliquidBot:
                 
                 candles = self.client.get_candles(pair, interval="1h", limit=50)
                 
+                # DEBUG: Log do formato de candle
+                if candles:
+                    self.logger.debug(f"[DEBUG CANDLES] {pair} formato: {list(candles[0].keys())}")
+                
                 # Busca funding rate
                 try:
                     funding_rates = self.client.get_funding_rates()

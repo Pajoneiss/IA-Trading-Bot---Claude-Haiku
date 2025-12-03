@@ -25,6 +25,53 @@ class TechnicalAnalysis:
         
         logger.info("[TECHNICAL ANALYSIS] Inicializado")
     
+    @staticmethod
+    def normalize_candles(candles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Normaliza formato de candles para padrão esperado
+        
+        Aceita tanto:
+        - Formato Hyperliquid: {'o', 'h', 'l', 'c', 'v', 't'}
+        - Formato padrão: {'open', 'high', 'low', 'close', 'volume'}
+        
+        Args:
+            candles: Lista de candles em qualquer formato
+            
+        Returns:
+            Lista de candles normalizados {'open', 'high', 'low', 'close', 'volume'}
+        """
+        normalized = []
+        
+        for candle in candles:
+            try:
+                # Se já está no formato padrão, usa direto
+                if 'open' in candle and 'high' in candle:
+                    normalized.append({
+                        'open': float(candle.get('open', 0)),
+                        'high': float(candle.get('high', 0)),
+                        'low': float(candle.get('low', 0)),
+                        'close': float(candle.get('close', 0)),
+                        'volume': float(candle.get('volume', 0))
+                    })
+                # Se está no formato Hyperliquid (o, h, l, c, v)
+                elif 'o' in candle and 'h' in candle:
+                    normalized.append({
+                        'open': float(candle.get('o', 0)),
+                        'high': float(candle.get('h', 0)),
+                        'low': float(candle.get('l', 0)),
+                        'close': float(candle.get('c', 0)),
+                        'volume': float(candle.get('v', 0))
+                    })
+                else:
+                    logger.warning(f"[TECHNICAL ANALYSIS] Candle com formato desconhecido: {candle.keys()}")
+                    continue
+                    
+            except (ValueError, TypeError) as e:
+                logger.error(f"[TECHNICAL ANALYSIS] Erro ao normalizar candle: {e}")
+                continue
+        
+        return normalized
+    
     def analyze_structure(self, 
                          candles: List[Dict[str, Any]],
                          timeframe: str = "15m") -> Dict[str, Any]:
@@ -43,6 +90,9 @@ class TechnicalAnalysis:
                 'confidence': 0.0-1.0
             }
         """
+        # Normaliza candles PRIMEIRO
+        candles = self.normalize_candles(candles)
+        
         if not candles or len(candles) < 20:
             return self._empty_structure()
         
@@ -85,6 +135,9 @@ class TechnicalAnalysis:
         Returns:
             Lista de padrões detectados: ['engulfing', 'doji', 'pin_bar', etc]
         """
+        # Normaliza candles PRIMEIRO
+        candles = self.normalize_candles(candles)
+        
         if not candles or len(candles) < 3:
             return []
         
@@ -152,6 +205,9 @@ class TechnicalAnalysis:
                 'strength': 0.0-1.0
             }
         """
+        # Normaliza candles PRIMEIRO
+        candles = self.normalize_candles(candles)
+        
         if not candles or len(candles) < max(ema_short, ema_long) + 5:
             return {'cross': 'none', 'alignment': 'neutral', 'strength': 0.0}
         
@@ -211,6 +267,9 @@ class TechnicalAnalysis:
                 'sell_side': [prices...]  # Liquidez de venda (abaixo)
             }
         """
+        # Normaliza candles PRIMEIRO
+        candles = self.normalize_candles(candles)
+        
         if not candles or len(candles) < 20:
             return {'buy_side': [], 'sell_side': []}
         
