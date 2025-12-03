@@ -213,6 +213,15 @@ class TelegramInteractivePRO:
                 logger.error(f"[TELEGRAM] Erro no comando /diario: {e}")
                 self.bot.send_message(message.chat.id, f"❌ Erro ao gerar diário: {e}")
         
+        # === PHASE 5: COMANDO DE MODO ===
+        @self.bot.message_handler(commands=['modo'])
+        def handle_modo_command(message):
+            try:
+                self._send_modo_menu(message.chat.id)
+            except Exception as e:
+                logger.error(f"[TELEGRAM] Erro no comando /modo: {e}")
+                self.bot.send_message(message.chat.id, f"❌ Erro ao exibir modos: {e}")
+        
         # Callback handler (para confirmações)
         @self.bot.callback_query_handler(func=lambda call: True)
         def callback_query(call):
@@ -221,6 +230,11 @@ class TelegramInteractivePRO:
                     self._fechar_todas_executar(call.message.chat.id)
                 elif call.data == "fechar_todas_cancelar":
                     self.bot.send_message(call.message.chat.id, "❌ Operação cancelada.")
+                
+                # Phase 5: Callbacks de modo
+                elif call.data.startswith("modo_"):
+                    mode_name = call.data.replace("modo_", "")
+                    self._change_mode(call.message.chat.id, mode_name)
                     
                 self.bot.answer_callback_query(call.id)
             except Exception as e:
@@ -897,6 +911,7 @@ class TelegramInteractivePRO:
         """
         try:
             from bot.phase4 import PerformanceAnalyzer
+            from bot.utils.telegram_utils import escape_markdown_v2, build_safe_line, format_number
             
             analyzer = PerformanceAnalyzer()
             
@@ -905,71 +920,124 @@ class TelegramInteractivePRO:
             weekly = analyzer.get_summary('weekly')
             monthly = analyzer.get_summary('monthly')
             
-            msg = "📊 *PERFORMANCE SUMMARY*\n"
-            msg += "=" * 30 + "\n\n"
+            # Monta mensagem com SANITIZAÇÃO COMPLETA
+            lines = []
+            
+            # Header
+            lines.append("📊 " + escape_markdown_v2("PERFORMANCE SUMMARY"))
+            lines.append(escape_markdown_v2("=" * 30))
+            lines.append("")
             
             # === DIÁRIO ===
-            msg += "📅 *HOJE*\n"
-            msg += f"• Trades: {daily['total_trades']}\n"
-            msg += f"• PnL: ${daily['pnl']['total']:.2f}\n"
-            msg += f"• Win Rate: {daily['win_rate']:.1f}%\n"
-            msg += f"• RR Médio: {daily['avg_rr']:.2f}R\n"
-            msg += f"• Profit Factor: {daily['profit_factor']:.2f}\n"
+            lines.append("📅 " + escape_markdown_v2("HOJE"))
+            lines.append(build_safe_line("• Trades: ", daily['total_trades']))
+            lines.append(build_safe_line("• PnL: ", f"${daily['pnl']['total']:.2f}"))
+            lines.append(build_safe_line("• Win Rate: ", f"{daily['win_rate']:.1f}%"))
+            lines.append(build_safe_line("• RR Médio: ", f"{daily['avg_rr']:.2f}R"))
+            lines.append(build_safe_line("• Profit Factor: ", f"{daily['profit_factor']:.2f}"))
             
             if daily['best_worst']:
                 best_trade = daily['best_worst'].get('best_trade', {})
                 worst_trade = daily['best_worst'].get('worst_trade', {})
-                msg += f"• Melhor: {best_trade.get('symbol', 'N/A')} (${best_trade.get('pnl', 0):.2f})\n"
-                msg += f"• Pior: {worst_trade.get('symbol', 'N/A')} (${worst_trade.get('pnl', 0):.2f})\n"
+                
+                if best_trade:
+                    symbol = best_trade.get('symbol', 'N/A')
+                    pnl = best_trade.get('pnl', 0)
+                    line = escape_markdown_v2(f"• Melhor: {symbol} (${pnl:.2f})")
+                    lines.append(line)
+                
+                if worst_trade:
+                    symbol = worst_trade.get('symbol', 'N/A')
+                    pnl = worst_trade.get('pnl', 0)
+                    line = escape_markdown_v2(f"• Pior: {symbol} (${pnl:.2f})")
+                    lines.append(line)
             
-            msg += "\n"
+            lines.append("")
             
             # === SEMANAL ===
-            msg += "📆 *7 DIAS*\n"
-            msg += f"• Trades: {weekly['total_trades']}\n"
-            msg += f"• PnL: ${weekly['pnl']['total']:.2f}\n"
-            msg += f"• Win Rate: {weekly['win_rate']:.1f}%\n"
-            msg += f"• RR Médio: {weekly['avg_rr']:.2f}R\n"
-            msg += f"• Profit Factor: {weekly['profit_factor']:.2f}\n"
+            lines.append("📆 " + escape_markdown_v2("7 DIAS"))
+            lines.append(build_safe_line("• Trades: ", weekly['total_trades']))
+            lines.append(build_safe_line("• PnL: ", f"${weekly['pnl']['total']:.2f}"))
+            lines.append(build_safe_line("• Win Rate: ", f"{weekly['win_rate']:.1f}%"))
+            lines.append(build_safe_line("• RR Médio: ", f"{weekly['avg_rr']:.2f}R"))
+            lines.append(build_safe_line("• Profit Factor: ", f"{weekly['profit_factor']:.2f}"))
             
             if weekly['best_worst']:
                 best_symbol = weekly['best_worst'].get('best_symbol', {})
                 worst_symbol = weekly['best_worst'].get('worst_symbol', {})
-                msg += f"• Melhor símbolo: {best_symbol.get('symbol', 'N/A')} (${best_symbol.get('pnl', 0):.2f})\n"
-                msg += f"• Pior símbolo: {worst_symbol.get('symbol', 'N/A')} (${worst_symbol.get('pnl', 0):.2f})\n"
+                
+                if best_symbol:
+                    symbol = best_symbol.get('symbol', 'N/A')
+                    pnl = best_symbol.get('pnl', 0)
+                    line = escape_markdown_v2(f"• Melhor símbolo: {symbol} (${pnl:.2f})")
+                    lines.append(line)
+                
+                if worst_symbol:
+                    symbol = worst_symbol.get('symbol', 'N/A')
+                    pnl = worst_symbol.get('pnl', 0)
+                    line = escape_markdown_v2(f"• Pior símbolo: {symbol} (${pnl:.2f})")
+                    lines.append(line)
             
-            msg += "\n"
+            lines.append("")
             
             # === MENSAL ===
-            msg += "📊 *30 DIAS*\n"
-            msg += f"• Trades: {monthly['total_trades']}\n"
-            msg += f"• PnL: ${monthly['pnl']['total']:.2f}\n"
-            msg += f"• Win Rate: {monthly['win_rate']:.1f}%\n"
-            msg += f"• RR Médio: {monthly['avg_rr']:.2f}R\n"
-            msg += f"• Profit Factor: {monthly['profit_factor']:.2f}\n"
-            msg += f"• Avg Duration: {monthly['avg_duration']}\n"
+            lines.append("📊 " + escape_markdown_v2("30 DIAS"))
+            lines.append(build_safe_line("• Trades: ", monthly['total_trades']))
+            lines.append(build_safe_line("• PnL: ", f"${monthly['pnl']['total']:.2f}"))
+            lines.append(build_safe_line("• Win Rate: ", f"{monthly['win_rate']:.1f}%"))
+            lines.append(build_safe_line("• RR Médio: ", f"{monthly['avg_rr']:.2f}R"))
+            lines.append(build_safe_line("• Profit Factor: ", f"{monthly['profit_factor']:.2f}"))
+            lines.append(build_safe_line("• Avg Duration: ", monthly['avg_duration']))
             
             if monthly['best_worst']:
                 best_strategy = monthly['best_worst'].get('best_strategy', {})
                 worst_strategy = monthly['best_worst'].get('worst_strategy', {})
-                msg += f"• Melhor estratégia: {best_strategy.get('strategy', 'N/A')} (${best_strategy.get('pnl', 0):.2f})\n"
-                msg += f"• Pior estratégia: {worst_strategy.get('strategy', 'N/A')} (${worst_strategy.get('pnl', 0):.2f})\n"
+                
+                if best_strategy:
+                    strategy = best_strategy.get('strategy', 'N/A')
+                    pnl = best_strategy.get('pnl', 0)
+                    line = escape_markdown_v2(f"• Melhor estratégia: {strategy} (${pnl:.2f})")
+                    lines.append(line)
+                
+                if worst_strategy:
+                    strategy = worst_strategy.get('strategy', 'N/A')
+                    pnl = worst_strategy.get('pnl', 0)
+                    line = escape_markdown_v2(f"• Pior estratégia: {strategy} (${pnl:.2f})")
+                    lines.append(line)
             
             # === QUALITY GATE ===
             rejection = daily['rejection_rate']
-            msg += f"\n🎯 *QUALITY GATE*\n"
-            msg += f"• Sinais hoje: {rejection['total_signals']}\n"
-            msg += f"• Executados: {rejection['executed']}\n"
-            msg += f"• Rejeitados: {rejection['rejected']} ({rejection['rejection_rate']:.1f}%)\n"
-            msg += f"• Pulados: {rejection['skipped']} ({rejection['skip_rate']:.1f}%)\n"
+            lines.append("")
+            lines.append("🎯 " + escape_markdown_v2("QUALITY GATE"))
+            lines.append(build_safe_line("• Sinais hoje: ", rejection['total_signals']))
+            lines.append(build_safe_line("• Executados: ", rejection['executed']))
             
-            msg += f"\n⏰ {datetime.utcnow().strftime('%d/%m %H:%M')} UTC"
+            rejected_str = f"{rejection['rejected']} ({rejection['rejection_rate']:.1f}%)"
+            lines.append(build_safe_line("• Rejeitados: ", rejected_str))
             
-            self.bot.send_message(chat_id, msg)
+            skipped_str = f"{rejection['skipped']} ({rejection['skip_rate']:.1f}%)"
+            lines.append(build_safe_line("• Pulados: ", skipped_str))
+            
+            lines.append("")
+            lines.append("⏰ " + escape_markdown_v2(datetime.utcnow().strftime('%d/%m %H:%M UTC')))
+            
+            # Junta tudo
+            msg = "\n".join(lines)
+            
+            # Envia com MarkdownV2
+            self.bot.send_message(chat_id, msg, parse_mode="MarkdownV2")
             
         except Exception as e:
             logger.error(f"[TELEGRAM] Erro ao enviar performance summary: {e}", exc_info=True)
-            self.bot.send_message(chat_id, f"❌ Erro ao gerar sumário de performance: {e}")
+            # Fallback sem formatação
+            try:
+                self.bot.send_message(
+                    chat_id,
+                    f"❌ Erro ao gerar sumário: {str(e)[:100]}",
+                    parse_mode=None
+                )
+            except:
+                pass
     
     def _send_daily_report(self, chat_id: int):
         """
@@ -986,129 +1054,323 @@ class TelegramInteractivePRO:
         """
         try:
             from bot.phase4 import PerformanceAnalyzer
+            from bot.utils.telegram_utils import escape_markdown_v2, build_safe_line, format_number
             
             analyzer = PerformanceAnalyzer()
             daily = analyzer.get_summary('daily')
             
-            msg = "📖 *DIÁRIO DE TRADING*\n"
-            msg += "=" * 30 + "\n"
-            msg += f"📅 {datetime.utcnow().strftime('%d/%m/%Y')}\n\n"
+            # Monta mensagem com SANITIZAÇÃO COMPLETA
+            lines = []
+            
+            # Header
+            lines.append("📖 " + escape_markdown_v2("DIÁRIO DE TRADING"))
+            lines.append(escape_markdown_v2("=" * 30))
+            lines.append("📅 " + escape_markdown_v2(datetime.utcnow().strftime('%d/%m/%Y')))
+            lines.append("")
             
             # === RESUMO DO DIA ===
-            msg += "*📊 RESUMO*\n"
-            msg += f"• Trades fechados: {daily['total_trades']}\n"
-            msg += f"• Parciais: {daily['total_partials']}\n"
-            msg += f"• Win Rate: {daily['win_rate']:.1f}%\n"
-            msg += f"• PnL Realizado: ${daily['pnl']['total']:.2f}\n"
-            msg += f"• PnL Médio: ${daily['pnl']['avg']:.2f}\n"
-            msg += f"• RR Médio: {daily['avg_rr']:.2f}R\n"
-            msg += f"• Profit Factor: {daily['profit_factor']:.2f}\n\n"
+            lines.append("📊 " + escape_markdown_v2("RESUMO"))
+            lines.append(build_safe_line("• Trades fechados: ", daily['total_trades']))
+            lines.append(build_safe_line("• Parciais: ", daily['total_partials']))
+            lines.append(build_safe_line("• Win Rate: ", f"{daily['win_rate']:.1f}%"))
+            lines.append(build_safe_line("• PnL Realizado: ", format_number(daily['pnl']['total'], 2, "$")))
+            lines.append(build_safe_line("• PnL Médio: ", format_number(daily['pnl']['avg'], 2, "$")))
+            lines.append(build_safe_line("• RR Médio: ", f"{daily['avg_rr']:.2f}R"))
+            lines.append(build_safe_line("• Profit Factor: ", f"{daily['profit_factor']:.2f}"))
+            lines.append("")
             
             # === DESTAQUES ===
             if daily['best_worst']:
                 best_worst = daily['best_worst']
                 
-                msg += "*🌟 DESTAQUES*\n"
+                lines.append("🌟 " + escape_markdown_v2("DESTAQUES"))
                 
                 best_trade = best_worst.get('best_trade', {})
                 if best_trade:
-                    msg += f"• Melhor trade: {best_trade.get('symbol', 'N/A')} "
-                    msg += f"(${best_trade.get('pnl', 0):.2f} | {best_trade.get('pnl_pct', 0):.2f}%)\n"
+                    symbol = best_trade.get('symbol', 'N/A')
+                    pnl = best_trade.get('pnl', 0)
+                    pnl_pct = best_trade.get('pnl_pct', 0)
+                    
+                    line = escape_markdown_v2(f"• Melhor trade: {symbol} (${pnl:.2f} | {pnl_pct:.2f}%)")
+                    lines.append(line)
                 
                 worst_trade = best_worst.get('worst_trade', {})
                 if worst_trade:
-                    msg += f"• Pior trade: {worst_trade.get('symbol', 'N/A')} "
-                    msg += f"(${worst_trade.get('pnl', 0):.2f} | {worst_trade.get('pnl_pct', 0):.2f}%)\n"
+                    symbol = worst_trade.get('symbol', 'N/A')
+                    pnl = worst_trade.get('pnl', 0)
+                    pnl_pct = worst_trade.get('pnl_pct', 0)
+                    
+                    line = escape_markdown_v2(f"• Pior trade: {symbol} (${pnl:.2f} | {pnl_pct:.2f}%)")
+                    lines.append(line)
                 
                 best_strategy = best_worst.get('best_strategy', {})
                 if best_strategy:
-                    msg += f"• Melhor estratégia: {best_strategy.get('strategy', 'N/A')} "
-                    msg += f"(${best_strategy.get('pnl', 0):.2f})\n"
+                    strategy = best_strategy.get('strategy', 'N/A')
+                    pnl = best_strategy.get('pnl', 0)
+                    
+                    line = escape_markdown_v2(f"• Melhor estratégia: {strategy} (${pnl:.2f})")
+                    lines.append(line)
                 
-                msg += "\n"
+                lines.append("")
             
             # === OBSERVAÇÕES DA IA ===
-            msg += "*🧠 OBSERVAÇÕES DA IA*\n"
+            lines.append("🧠 " + escape_markdown_v2("OBSERVAÇÕES DA IA"))
             
             # Win rate analysis
             if daily['win_rate'] >= 70:
-                msg += "✅ Win rate excelente hoje!\n"
+                lines.append(escape_markdown_v2("✅ Win rate excelente hoje!"))
             elif daily['win_rate'] >= 50:
-                msg += "✓ Win rate dentro do esperado\n"
+                lines.append(escape_markdown_v2("✓ Win rate dentro do esperado"))
             else:
-                msg += "⚠️ Win rate abaixo do ideal\n"
+                lines.append(escape_markdown_v2("⚠️ Win rate abaixo do ideal"))
             
             # RR analysis
             if daily['avg_rr'] >= 2.0:
-                msg += "✅ RR médio muito bom (≥2R)\n"
+                lines.append(escape_markdown_v2("✅ RR médio muito bom (≥2R)"))
             elif daily['avg_rr'] >= 1.5:
-                msg += "✓ RR médio satisfatório\n"
+                lines.append(escape_markdown_v2("✓ RR médio satisfatório"))
             else:
-                msg += "⚠️ RR médio pode melhorar\n"
+                lines.append(escape_markdown_v2("⚠️ RR médio pode melhorar"))
             
             # Profit factor
             if daily['profit_factor'] >= 2.0:
-                msg += "✅ Profit Factor excelente (≥2.0)\n"
+                lines.append(escape_markdown_v2("✅ Profit Factor excelente (≥2.0)"))
             elif daily['profit_factor'] >= 1.5:
-                msg += "✓ Profit Factor bom\n"
+                lines.append(escape_markdown_v2("✓ Profit Factor bom"))
             elif daily['profit_factor'] > 0:
-                msg += "⚠️ Profit Factor baixo\n"
+                lines.append(escape_markdown_v2("⚠️ Profit Factor baixo"))
             else:
-                msg += "❌ Profit Factor negativo (perdas > ganhos)\n"
+                lines.append(escape_markdown_v2("❌ Profit Factor negativo (perdas > ganhos)"))
             
             # Quality Gate effectiveness
             rejection = daily['rejection_rate']
             if rejection['total_signals'] > 0:
                 execution_rate = (rejection['executed'] / rejection['total_signals']) * 100
-                msg += f"\n🎯 Quality Gate executou {execution_rate:.1f}% dos sinais\n"
+                line = escape_markdown_v2(f"🎯 Quality Gate executou {execution_rate:.1f}% dos sinais")
+                lines.append(line)
                 
                 if rejection['rejection_rate'] > 50:
-                    msg += "⚠️ Muitos sinais rejeitados (mercado difícil)\n"
+                    lines.append(escape_markdown_v2("⚠️ Muitos sinais rejeitados (mercado difícil)"))
             
-            msg += "\n"
+            lines.append("")
             
             # === SUGESTÃO PARA AMANHÃ ===
-            msg += "*💡 SUGESTÃO PARA AMANHÃ*\n"
+            lines.append("💡 " + escape_markdown_v2("SUGESTÃO PARA AMANHÃ"))
             
             if daily['total_trades'] == 0:
-                msg += "• Nenhum trade hoje - mercado pode estar em range\n"
-                msg += "• Aguardar setup mais claro\n"
+                lines.append(escape_markdown_v2("• Nenhum trade hoje - mercado pode estar em range"))
+                lines.append(escape_markdown_v2("• Aguardar setup mais claro"))
             elif daily['win_rate'] < 50:
-                msg += "• Focar em qualidade vs quantidade\n"
-                msg += "• Revisar confluências antes de entrar\n"
-                msg += "• Considerar aumentar threshold do Quality Gate\n"
+                lines.append(escape_markdown_v2("• Focar em qualidade vs quantidade"))
+                lines.append(escape_markdown_v2("• Revisar confluências antes de entrar"))
+                lines.append(escape_markdown_v2("• Considerar aumentar threshold do Quality Gate"))
             elif daily['avg_rr'] < 1.5:
-                msg += "• Deixar trades correrem mais\n"
-                msg += "• Evitar parciais muito cedo\n"
-                msg += "• Aguardar 2R+ antes de sair\n"
+                lines.append(escape_markdown_v2("• Deixar trades correrem mais"))
+                lines.append(escape_markdown_v2("• Evitar parciais muito cedo"))
+                lines.append(escape_markdown_v2("• Aguardar 2R+ antes de sair"))
             else:
-                msg += "• Manter a consistência\n"
-                msg += "• Continuar respeitando o Quality Gate\n"
-                msg += "• Focar em setups A+\n"
+                lines.append(escape_markdown_v2("• Manter a consistência"))
+                lines.append(escape_markdown_v2("• Continuar respeitando o Quality Gate"))
+                lines.append(escape_markdown_v2("• Focar em setups A+"))
             
             # Market Intelligence para amanhã
             try:
                 mi = self.market_intel.get_full_data()
                 fg = mi.get('fear_greed', {}).get('value', 50)
                 
-                msg += "\n*🌍 CONTEXTO DE MERCADO*\n"
+                lines.append("")
+                lines.append("🌍 " + escape_markdown_v2("CONTEXTO DE MERCADO"))
                 if fg < 30:
-                    msg += "• Fear & Greed baixo - oportunidades em dip\n"
+                    lines.append(escape_markdown_v2("• Fear & Greed baixo - oportunidades em dip"))
                 elif fg > 70:
-                    msg += "• Fear & Greed alto - cautela com topos\n"
+                    lines.append(escape_markdown_v2("• Fear & Greed alto - cautela com topos"))
                 else:
-                    msg += "• Fear & Greed neutro - mercado equilibrado\n"
+                    lines.append(escape_markdown_v2("• Fear & Greed neutro - mercado equilibrado"))
             except:
                 pass
             
-            msg += f"\n⏰ {datetime.utcnow().strftime('%d/%m %H:%M')} UTC"
-            msg += "\n\n_Use /pnl para métricas detalhadas_"
+            lines.append("")
+            lines.append("⏰ " + escape_markdown_v2(datetime.utcnow().strftime('%d/%m %H:%M UTC')))
+            lines.append("")
+            lines.append(escape_markdown_v2("Use /pnl para métricas detalhadas"))
             
-            self.bot.send_message(chat_id, msg)
+            # Junta tudo
+            msg = "\n".join(lines)
+            
+            # Envia com MarkdownV2
+            self.bot.send_message(chat_id, msg, parse_mode="MarkdownV2")
             
         except Exception as e:
             logger.error(f"[TELEGRAM] Erro ao enviar daily report: {e}", exc_info=True)
-            self.bot.send_message(chat_id, f"❌ Erro ao gerar diário: {e}")
+            # Fallback sem formatação
+            try:
+                self.bot.send_message(
+                    chat_id, 
+                    f"❌ Erro ao gerar diário formatado. Detalhes: {str(e)[:100]}",
+                    parse_mode=None
+                )
+            except:
+                pass
+    
+    # ========== PHASE 5: TRADING MODES ==========
+    
+    def _send_modo_menu(self, chat_id: int):
+        """
+        Envia menu de seleção de modo
+        """
+        try:
+            from bot.phase5 import TradingMode, TradingModeConfig, TradingModeManager
+            
+            # Pega modo atual do bot principal
+            mode_manager = getattr(self.main_bot, 'mode_manager', None)
+            
+            if not mode_manager:
+                self.bot.send_message(
+                    chat_id,
+                    "⚠️ Sistema de modos não disponível",
+                    parse_mode=None
+                )
+                return
+            
+            current_mode = mode_manager.get_current_mode()
+            current_config = mode_manager.get_current_config()
+            
+            # Monta mensagem (texto simples sem markdown)
+            msg = "🎚️ MODOS DE TRADING\n"
+            msg += "=" * 30 + "\n\n"
+            
+            msg += f"Modo atual: {current_config['emoji']} {current_mode.value}\n"
+            msg += f"{current_config['description']}\n\n"
+            
+            msg += "Escolha o modo de operação:\n\n"
+            
+            # Descrição dos modos
+            for mode, config in TradingModeConfig.get_all_modes().items():
+                emoji = config['emoji']
+                name = mode.value
+                desc = config['description']
+                
+                msg += f"{emoji} {name}\n"
+                msg += f"   Risco: {config['risk_multiplier']*100:.0f}% do base\n"
+                msg += f"   Sinais/dia: até {config['max_signals_per_day']}\n"
+                msg += f"   Regimes: {len(config['allowed_regimes'])}\n\n"
+            
+            # Cria botões inline
+            from telebot import types
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            
+            for mode in [TradingMode.CONSERVADOR, TradingMode.BALANCEADO, TradingMode.AGRESSIVO]:
+                config = TradingModeConfig.get_config(mode)
+                emoji = config['emoji']
+                
+                # Marca modo atual com ✓
+                if mode == current_mode:
+                    button_text = f"✓ {emoji} {mode.value}"
+                else:
+                    button_text = f"{emoji} {mode.value}"
+                
+                button = types.InlineKeyboardButton(
+                    text=button_text,
+                    callback_data=f"modo_{mode.value}"
+                )
+                markup.add(button)
+            
+            # Envia sem parse_mode para evitar erros
+            self.bot.send_message(chat_id, msg, reply_markup=markup, parse_mode=None)
+            
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro ao enviar modo menu: {e}", exc_info=True)
+            self.bot.send_message(
+                chat_id,
+                f"❌ Erro ao exibir modos: {str(e)[:100]}",
+                parse_mode=None
+            )
+    
+    def _change_mode(self, chat_id: int, mode_name: str):
+        """
+        Altera modo de trading
+        
+        Args:
+            chat_id: ID do chat
+            mode_name: Nome do modo (CONSERVADOR, BALANCEADO, AGRESSIVO)
+        """
+        try:
+            from bot.phase5 import TradingMode, TradingModeConfig
+            
+            # Pega mode manager do bot principal
+            mode_manager = getattr(self.main_bot, 'mode_manager', None)
+            
+            if not mode_manager:
+                self.bot.send_message(
+                    chat_id,
+                    "⚠️ Sistema de modos não disponível",
+                    parse_mode=None
+                )
+                return
+            
+            # Converte string para enum
+            try:
+                new_mode = TradingMode[mode_name]
+            except KeyError:
+                self.bot.send_message(
+                    chat_id,
+                    f"❌ Modo inválido: {mode_name}",
+                    parse_mode=None
+                )
+                return
+            
+            # Verifica se já está nesse modo
+            if mode_manager.get_current_mode() == new_mode:
+                config = TradingModeConfig.get_config(new_mode)
+                msg = f"{config['emoji']} Já está no modo {new_mode.value}"
+                self.bot.send_message(chat_id, msg, parse_mode=None)
+                return
+            
+            # Altera modo
+            success = mode_manager.set_mode(new_mode, source="telegram")
+            
+            if success:
+                config = TradingModeConfig.get_config(new_mode)
+                
+                msg = f"✅ Modo alterado para: {config['emoji']} {new_mode.value}\n\n"
+                
+                # Explica o que mudou
+                if new_mode == TradingMode.CONSERVADOR:
+                    msg += "O bot ficará mais seletivo:\n"
+                    msg += "• Risco reduzido (50% do padrão)\n"
+                    msg += "• Confiança mínima +10%\n"
+                    msg += "• Apenas trends limpos\n"
+                    msg += "• Máx 10 sinais/dia"
+                
+                elif new_mode == TradingMode.BALANCEADO:
+                    msg += "Modo equilibrado ativado:\n"
+                    msg += "• Risco padrão (100%)\n"
+                    msg += "• Confiança padrão\n"
+                    msg += "• Todos regimes permitidos\n"
+                    msg += "• Máx 20 sinais/dia"
+                
+                elif new_mode == TradingMode.AGRESSIVO:
+                    msg += "Modo agressivo ativado:\n"
+                    msg += "• Risco aumentado (120% do padrão)\n"
+                    msg += "• Confiança mínima -5%\n"
+                    msg += "• Mais regimes permitidos\n"
+                    msg += "• Máx 40 sinais/dia"
+                
+                self.bot.send_message(chat_id, msg, parse_mode=None)
+            else:
+                self.bot.send_message(
+                    chat_id,
+                    "❌ Erro ao alterar modo",
+                    parse_mode=None
+                )
+            
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro ao alterar modo: {e}", exc_info=True)
+            self.bot.send_message(
+                chat_id,
+                f"❌ Erro: {str(e)[:100]}",
+                parse_mode=None
+            )
     
     # ========== HELPERS ==========
     
