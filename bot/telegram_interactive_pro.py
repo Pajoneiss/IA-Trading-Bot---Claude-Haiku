@@ -428,14 +428,35 @@ class TelegramInteractivePRO:
             total_size = 0.0
             
             for i, pos in enumerate(positions, 1):
-                coin = pos.get('coin', 'UNKNOWN')
+                # PositionManager retorna 'symbol', não 'coin'
+                coin = pos.get('symbol', pos.get('coin', 'UNKNOWN'))  # Tenta symbol primeiro
+                # Remove sufixo USDC se tiver
+                if coin.endswith('USDC'):
+                    coin = coin[:-4]  # Remove 'USDC' (ex: DYDXUSDC -> DYDX)
+                
                 side = pos.get('side', 'unknown').upper()
-                size_usd = pos.get('size_usd', 0)
-                size = pos.get('size', 0)
+                size = pos.get('size', 0)  # Tamanho em coins
                 entry = pos.get('entry_price', 0)
-                current = pos.get('current_price', entry)
-                pnl = pos.get('unrealized_pnl', 0)
                 leverage = pos.get('leverage', 1)
+                
+                # Busca preço atual
+                if prices:
+                    # Tenta com sufixo USDC primeiro
+                    symbol_with_suffix = coin + 'USDC' if not coin.endswith('USDC') else coin
+                    current = prices.get(symbol_with_suffix, prices.get(coin, entry))
+                else:
+                    current = entry
+                
+                # Calcula size_usd
+                size_usd = size * entry
+                
+                # Calcula PnL não-realizado
+                if side == 'LONG':
+                    pnl = size * (current - entry)
+                else:  # SHORT
+                    pnl = size * (entry - current)
+                
+                pnl = pnl * leverage  # Aplica leverage
                 
                 # Calcula variação %
                 if entry > 0:
@@ -458,7 +479,11 @@ class TelegramInteractivePRO:
                 opened_at = pos.get('opened_at')
                 if opened_at:
                     try:
-                        delta = datetime.utcnow() - opened_at
+                        # opened_at vem como string ISO do to_dict()
+                        if isinstance(opened_at, str):
+                            opened_at = datetime.fromisoformat(opened_at.replace('Z', '+00:00'))
+                        
+                        delta = datetime.utcnow() - opened_at.replace(tzinfo=None)
                         total_hours = delta.total_seconds() / 3600
                         if total_hours < 1:
                             minutes = int(delta.total_seconds() / 60)
@@ -471,7 +496,8 @@ class TelegramInteractivePRO:
                             days = delta.days
                             hours = int((total_hours - days * 24))
                             time_str = f"{days}d {hours}h"
-                    except:
+                    except Exception as e:
+                        logger.error(f"Erro ao calcular tempo: {e}")
                         time_str = None
                 else:
                     time_str = None
