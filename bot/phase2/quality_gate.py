@@ -35,6 +35,15 @@ class QualityGate:
         self.max_candle_body_pct = self.config.get('max_candle_body_pct', 3.0)
         self.min_confluences = self.config.get('min_confluences', 2)
         
+        # Phase 3: Market Regime Analyzer
+        try:
+            from bot.phase3 import MarketRegimeAnalyzer
+            self._regime_analyzer = MarketRegimeAnalyzer(logger_instance=logger)
+            logger.info("[QUALITY GATE] Phase 3 habilitada: Market Regime + Anti-Chop")
+        except ImportError:
+            self._regime_analyzer = None
+            logger.debug("[QUALITY GATE] Phase 3 não disponível")
+        
         logger.info(f"[QUALITY GATE] Inicializado: min_conf={self.min_confidence} | "
                    f"max_body={self.max_candle_body_pct}% | min_confluences={self.min_confluences}")
     
@@ -106,7 +115,108 @@ class QualityGate:
             
             confidence = adjusted_conf
         
-        # === CRITÉRIO 4: MARKET INTELLIGENCE ===
+        # === CRITÉRIO 4: MARKET REGIME + ANTI-CHOP (PHASE 3) ===
+        # Integração da Phase 3 para filtrar regimes ruins
+        try:
+            from bot.phase3 import MarketRegimeAnalyzer, detect_chop
+            
+            # Regime analysis (se tiver candles disponíveis)
+            regime_info = None
+            chop_info = None
+            
+            if market_context and hasattr(self, '_regime_analyzer'):
+                # Tenta pegar candles do contexto
+                candles_m15 = market_context.get('candles_15m', [])
+                candles_h1 = market_context.get('candles_h1', [])
+                
+                if candles_m15 and candles_h1:
+                    regime_info = self._regime_analyzer.evaluate(
+                        symbol=symbol,
+                        candles_m15=candles_m15,
+                        candles_h1=candles_h1,
+                        market_intel=market_intelligence
+                    )
+                    
+                    # Chop detection
+                    chop_info = detect_chop(candles_m15, logger_instance=logger)
+            
+            # BLOQUEIA em PANIC_HIGH_VOL
+            if regime_info and regime_info['regime'] == 'PANIC_HIGH_VOL':
+                # Só aprova se confidence muito alta E não aggressive
+                if confidence < 0.90 or decision.get('risk_profile') == 'AGGRESSIVE':
+                    result.approved = False
+                    result.confidence_score = confidence
+                    result.reasons.append(f"PANIC_HIGH_VOL: vol={regime_info['volatility']}, risk_off={regime_info['risk_off']}")
+                    logger.warning(f"[QUALITY GATE] ❌ {symbol} bloqueado: PANIC_HIGH_VOL")
+                    return result
+                else:
+                    result.warnings.append("PANIC_HIGH_VOL mas confidence >= 0.90")
+            
+            # BLOQUEIA em RANGE_CHOP ou CHOPPY
+            if (regime_info and regime_info['regime'] == 'RANGE_CHOP') or \
+               (chop_info and chop_info['is_choppy']):
+                
+                chop_score = chop_info.get('chop_score', 0) if chop_info else 0.5
+                
+                # Exige confluências extras
+                if len(confluences) < 3:
+                    result.approved = False
+                    result.confidence_score = confidence
+                    result.reasons.append(f"RANGE_CHOP/Choppy (score={chop_score:.2f}) + poucas confluências ({len(confluences)} < 3)")
+                    logger.warning(f"[QUALITY GATE] ❌ {symbol} bloqueado: mercado sujo + poucas confluências")
+                    return result
+                
+                # Se scalp em chop, bloqueia
+                style = decision.get('style', 'swing')
+                if style == 'scalp':
+                    result.approved = False
+                    result.confidence_score = confidence
+                    result.reasons.append(f"Scalp bloqueado em CHOP (score={chop_score:.2f})")
+                    logger.warning(f"[QUALITY GATE] ❌ {symbol} bloqueado: scalp em chop")
+                    return result
+                
+                # Aviso mas permite passar se tiver confluências
+                result.warnings.append(f"Mercado choppy (score={chop_score:.2f}) mas tem {len(confluences)} confluências")
+            
+            # BLOQUEIA em LOW_VOL_DRIFT para scalps
+            if regime_info and regime_info['regime'] == 'LOW_VOL_DRIFT':
+                style = decision.get('style', 'swing')
+                if style == 'scalp':
+                    result.approved = False
+                    result.confidence_score = confidence
+                    result.reasons.append("Scalp bloqueado em LOW_VOL_DRIFT")
+                    logger.warning(f"[QUALITY GATE] ❌ {symbol} bloqueado: scalp em low vol")
+                    return result
+            
+            # RISK_OFF: ajusta confidence
+            if regime_info and regime_info['risk_off']:
+                confidence *= 0.9  # Reduz 10%
+                result.warnings.append("risk_off ativo: confidence reduzida")
+                
+                # Eleva threshold temporariamente
+                temp_threshold = max(self.min_confidence, 0.88)
+                if confidence < temp_threshold:
+                    result.approved = False
+                    result.confidence_score = confidence
+                    result.reasons.append(f"risk_off: confidence {confidence:.2f} < {temp_threshold:.2f}")
+                    logger.warning(f"[QUALITY GATE] ❌ {symbol} bloqueado: risk_off + confidence insuficiente")
+                    return result
+            
+            # Log do regime (se disponível)
+            if regime_info:
+                logger.debug(
+                    f"[QUALITY GATE] {symbol} regime={regime_info['regime']}, "
+                    f"chop={chop_info.get('chop_score', 0):.2f if chop_info else 'N/A'}"
+                )
+        
+        except ImportError:
+            # Phase 3 não disponível, continua normalmente
+            logger.debug("[QUALITY GATE] Phase 3 não disponível, pulando regime check")
+        except Exception as e:
+            # Erro na Phase 3, não quebra o Quality Gate
+            logger.error(f"[QUALITY GATE] Erro na Phase 3: {e}")
+        
+        # === CRITÉRIO 5 (original 4): MARKET INTELLIGENCE ===
         if market_intelligence:
             mi_check = self._check_market_intelligence(decision, market_intelligence)
             
@@ -125,7 +235,7 @@ class QualityGate:
                     logger.warning(f"[QUALITY GATE] ❌ {symbol} rejeitado por MI conflito")
                     return result
         
-        # === CRITÉRIO 5: RISK PROFILE vs MARKET CONDITIONS ===
+        # === CRITÉRIO 6 (original 5): RISK PROFILE vs MARKET CONDITIONS ===
         risk_profile = decision.get('risk_profile', 'BALANCED')
         if market_intelligence:
             profile_check = self._check_risk_profile_alignment(risk_profile, market_intelligence)
