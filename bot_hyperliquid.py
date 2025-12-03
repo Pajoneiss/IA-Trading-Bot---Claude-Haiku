@@ -463,6 +463,10 @@ class HyperliquidBot:
         self.scalp_call_interval = self.SCALP_CALL_INTERVAL_MINUTES * 60  # Em segundos
         self.last_scalp_ai_call = 0  # Timestamp da última chamada SCALP
         
+        # Contador de iterações para OpenAI (reduz rate limit)
+        self.openai_analysis_interval = config.get('openai_analysis_interval', 5)  # Analisa 1 a cada N iterações
+        self.iteration_counter = 0  # Contador de iterações
+        
         # Cache de decisões
         self.last_swing_decisions = []  # Cache das últimas decisões SWING
         self.last_scalp_decisions = []  # Cache das últimas decisões SCALP
@@ -471,6 +475,8 @@ class HyperliquidBot:
         self.openai_enabled = bool(config.get('openai_api_key'))
         if not self.openai_enabled:
             self.logger.info("[AI] OpenAI SCALP desativado: OPENAI_API_KEY não configurada.")
+        else:
+            self.logger.info(f"[AI] OpenAI SCALP: 1 análise a cada {self.openai_analysis_interval} iterações (reduz rate limit)")
         # ================================================
         
         self.logger.info("=" * 60)
@@ -833,45 +839,60 @@ class HyperliquidBot:
         # === SCALP (OpenAI) ===
         scalp_decisions = []
         if self.openai_enabled:
-            # 1. Filtra candidatos (exclui posições abertas)
-            all_symbols = self.trading_pairs
-            open_positions_list = self.position_manager.get_all_positions()
+            # Incrementa contador de iterações
+            self.iteration_counter += 1
             
-            scalp_candidates = self.ai_manager.filter_symbols_for_scalp(
-                all_symbols, open_positions_list, market_snapshot
-            )
+            # Só analisa se chegou no intervalo (ex: 1 a cada 5 iterações)
+            should_analyze_scalp = (self.iteration_counter % self.openai_analysis_interval == 0)
             
-            # 2. Para cada candidato, decide se chama IA
-            for symbol in scalp_candidates:
-                if self.ai_manager.should_call_scalp(symbol, market_snapshot):
-                    self.logger.info(f"⚡ [AI MANAGER] Analisando SCALP para {symbol}...")
-                    
-                    # Filtra contexto apenas para este símbolo
-                    symbol_context = [ctx for ctx in market_contexts if ctx['symbol'] == symbol]
-                    
-                    if not symbol_context:
-                        continue
+            if not should_analyze_scalp:
+                self.logger.debug(f"[AI] Pulando análise OpenAI SCALP (iteração {self.iteration_counter}/{self.openai_analysis_interval})")
+                scalp_decisions = self.last_scalp_decisions  # Usa cache
+            else:
+                self.logger.info(f"⚡ [AI] Executando análise OpenAI SCALP (iteração {self.iteration_counter})")
+                
+                # 1. Filtra candidatos (exclui posições abertas)
+                all_symbols = self.trading_pairs
+                open_positions_list = self.position_manager.get_all_positions()
+                
+                scalp_candidates = self.ai_manager.filter_symbols_for_scalp(
+                    all_symbols, open_positions_list, market_snapshot
+                )
+                
+                # 2. Para cada candidato, decide se chama IA
+                for symbol in scalp_candidates:
+                    if self.ai_manager.should_call_scalp(symbol, market_snapshot):
+                        self.logger.info(f"⚡ [AI MANAGER] Analisando SCALP para {symbol}...")
                         
-                    try:
-                        decisions = self.ai_engine.scalp_engine.get_scalp_decision(
-                            market_contexts=symbol_context,
-                            account_info=account_info,
-                            open_positions=open_positions_list,
-                            risk_limits=risk_limits
-                        )
+                        # Filtra contexto apenas para este símbolo
+                        symbol_context = [ctx for ctx in market_contexts if ctx['symbol'] == symbol]
                         
-                        if decisions:
-                            # Taggeia
-                            for dec in decisions:
-                                if dec.get('action') not in ('hold', 'skip'):
-                                    dec['source'] = 'openai_scalp'
-                                    dec['style'] = 'scalp'
-                                    scalp_decisions.append(dec)
-                                
-                            self.ai_manager.register_scalp_call(symbol)
+                        if not symbol_context:
+                            continue
                             
-                    except Exception as e:
-                        self.logger.error(f"Erro ao chamar SCALP para {symbol}: {e}")
+                        try:
+                            decisions = self.ai_engine.scalp_engine.get_scalp_decision(
+                                market_contexts=symbol_context,
+                                account_info=account_info,
+                                open_positions=open_positions_list,
+                                risk_limits=risk_limits
+                            )
+                            
+                            if decisions:
+                                # Taggeia
+                                for dec in decisions:
+                                    if dec.get('action') not in ('hold', 'skip'):
+                                        dec['source'] = 'openai_scalp'
+                                        dec['style'] = 'scalp'
+                                        scalp_decisions.append(dec)
+                                    
+                                self.ai_manager.register_scalp_call(symbol)
+                                
+                        except Exception as e:
+                            self.logger.error(f"Erro ao chamar SCALP para {symbol}: {e}")
+                
+                # Atualiza cache
+                self.last_scalp_decisions = scalp_decisions
             
             # Atualiza cache de scalp (opcional, pois scalp é pontual)
             if scalp_decisions:
@@ -1506,6 +1527,7 @@ def main():
         'min_confidence_open': float(os.getenv('MIN_CONFIDENCE_OPEN', '0.75')),       # Confiança mín para abrir
         'min_confidence_adjust': float(os.getenv('MIN_CONFIDENCE_ADJUST', '0.82')),   # Confiança mín para increase/decrease
         'max_adjustments_per_iteration': int(os.getenv('MAX_ADJUSTMENTS_PER_ITERATION', '1')),  # Máx 1 ajuste por ciclo
+        'openai_analysis_interval': int(os.getenv('OPENAI_ANALYSIS_INTERVAL', '5')),  # Analisa 1 a cada N iterações (reduz rate limit)
         
         # ===== TELEGRAM NOTIFIER =====
         'telegram_bot_token': os.getenv('TELEGRAM_BOT_TOKEN'),

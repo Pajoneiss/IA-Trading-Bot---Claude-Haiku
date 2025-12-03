@@ -8,6 +8,7 @@ import logging
 import os
 from typing import Dict, List, Optional, Any
 import openai
+from openai import RateLimitError, APIError
 from bot.scalp_filters import ScalpFilters
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,14 @@ class OpenAiScalpEngine:
                 max_tokens=1000,
                 response_format={"type": "json_object"}
             )
+        except openai.RateLimitError as e:
+            logger.error(f"❌ [AI] OpenAI RATE LIMIT atingido: {e}")
+            logger.warning("⚠️  OpenAI Scalp Engine temporariamente desabilitado. Remova OPENAI_API_KEY ou aguarde reset do limite.")
+            self.enabled = False  # Desabilita temporariamente
+            return []
+        except openai.APIError as e:
+            logger.error(f"❌ [AI] Erro na API OpenAI: {e}")
+            return []
             
             response_text = response.choices[0].message.content
             logger.debug(f"Resposta OpenAI (raw): {response_text[:300]}...")
