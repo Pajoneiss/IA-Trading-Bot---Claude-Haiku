@@ -306,17 +306,111 @@ class TelegramInteractivePRO:
     # ========== BOTÃO 2: POSIÇÕES ==========
     
     def _send_posicoes(self, chat_id):
-        """📈 Posições Abertas"""
+        """📈 Posições Abertas - VERSÃO CORRIGIDA COM FALLBACK"""
         try:
-            # Busca preços atuais
+            logger.info("[TELEGRAM] Buscando posições...")
+            
+            # Tenta múltiplas fontes de dados
+            positions = []
+            
+            # MÉTODO 1: Tenta via PositionManager (padrão)
             try:
                 prices = self.main_bot.client.get_all_mids()
-            except:
-                prices = {}
+                positions = self.main_bot.position_manager.get_all_positions(current_prices=prices)
+                logger.info(f"[TELEGRAM] PositionManager retornou {len(positions)} posições")
+                
+                # Verifica se tem dados válidos
+                if positions and all(p.get('coin') != 'UNKNOWN' for p in positions):
+                    logger.info(f"[TELEGRAM] Dados válidos do PositionManager")
+                else:
+                    logger.warning(f"[TELEGRAM] Dados incompletos, tentando fallback...")
+                    positions = []  # Force fallback
+                    
+            except Exception as e:
+                logger.error(f"[TELEGRAM] Erro no PositionManager: {e}")
+                positions = []
             
-            positions = self.main_bot.position_manager.get_all_positions(current_prices=prices)
-            
+            # MÉTODO 2: Fallback - Busca direto do Hyperliquid
             if not positions:
+                try:
+                    logger.info("[TELEGRAM] Buscando direto do Hyperliquid...")
+                    
+                    # Wallet address
+                    wallet = getattr(self.main_bot, 'wallet_address', None)
+                    if not wallet:
+                        wallet = self.main_bot.account.address
+                    
+                    logger.info(f"[TELEGRAM] Wallet: {wallet[:10]}...")
+                    
+                    # User state
+                    user_state = self.main_bot.client.info.user_state(wallet)
+                    
+                    if user_state and 'assetPositions' in user_state:
+                        asset_positions = user_state['assetPositions']
+                        logger.info(f"[TELEGRAM] {len(asset_positions)} assetPositions")
+                        
+                        # Preços
+                        prices = self.main_bot.client.get_all_mids()
+                        
+                        # Processa cada posição
+                        for asset_pos in asset_positions:
+                            position = asset_pos.get('position', {})
+                            coin = position.get('coin', 'UNKNOWN')
+                            
+                            # Tamanho da posição
+                            szi = float(position.get('szi', 0))
+                            
+                            if szi == 0:
+                                continue  # Pula posições vazias
+                            
+                            # Entry price
+                            entry_px = float(position.get('entryPx', 0))
+                            if entry_px == 0:
+                                continue
+                            
+                            # Preço atual
+                            current_px = prices.get(coin, entry_px)
+                            
+                            # Leverage
+                            leverage_obj = position.get('leverage', {})
+                            if isinstance(leverage_obj, dict):
+                                leverage = float(leverage_obj.get('value', 1))
+                            else:
+                                leverage = float(leverage_obj) if leverage_obj else 1
+                            
+                            # Calcula tamanho em USD
+                            size_usd = abs(szi * entry_px)
+                            
+                            # Determina lado e calcula PnL
+                            if szi > 0:  # LONG
+                                pnl = szi * (current_px - entry_px)
+                                side = 'long'
+                            else:  # SHORT
+                                pnl = abs(szi) * (entry_px - current_px)
+                                side = 'short'
+                            
+                            logger.info(f"[TELEGRAM] {coin} {side.upper()}: ${size_usd:.2f} PnL=${pnl:+.2f}")
+                            
+                            positions.append({
+                                'coin': coin,
+                                'side': side,
+                                'size_usd': size_usd,
+                                'size': abs(szi),
+                                'entry_price': entry_px,
+                                'current_price': current_px,
+                                'unrealized_pnl': pnl,
+                                'leverage': leverage,
+                                'opened_at': None
+                            })
+                        
+                        logger.info(f"[TELEGRAM] {len(positions)} posições processadas")
+                        
+                except Exception as e:
+                    logger.error(f"[TELEGRAM] Erro no fallback: {e}", exc_info=True)
+            
+            # Se ainda não tem posições
+            if not positions:
+                logger.info("[TELEGRAM] Nenhuma posição encontrada")
                 msg = (
                     "📈 *POSIÇÕES ABERTAS*\n\n"
                     "Nenhuma posição aberta no momento.\n\n"
@@ -326,48 +420,106 @@ class TelegramInteractivePRO:
                 self.bot.send_message(chat_id, msg)
                 return
             
+            # Formata mensagem
+            logger.info(f"[TELEGRAM] Formatando {len(positions)} posições")
             msg = f"📈 *POSIÇÕES ABERTAS*\n\n"
             
             total_pnl = 0.0
+            total_size = 0.0
             
             for i, pos in enumerate(positions, 1):
                 coin = pos.get('coin', 'UNKNOWN')
                 side = pos.get('side', 'unknown').upper()
                 size_usd = pos.get('size_usd', 0)
+                size = pos.get('size', 0)
                 entry = pos.get('entry_price', 0)
                 current = pos.get('current_price', entry)
                 pnl = pos.get('unrealized_pnl', 0)
+                leverage = pos.get('leverage', 1)
+                
+                # Calcula variação %
+                if entry > 0:
+                    price_change = ((current - entry) / entry * 100)
+                else:
+                    price_change = 0
+                
+                # PnL %
                 pnl_pct = (pnl / size_usd * 100) if size_usd > 0 else 0
                 
-                # Calcula há quanto tempo está aberta
+                # Emoji de PnL
+                if pnl > 0:
+                    pnl_emoji = "💚"
+                elif pnl < 0:
+                    pnl_emoji = "❤️"
+                else:
+                    pnl_emoji = "💙"
+                
+                # Tempo aberto
                 opened_at = pos.get('opened_at')
                 if opened_at:
                     try:
                         delta = datetime.utcnow() - opened_at
-                        hours = delta.seconds // 3600
-                        minutes = (delta.seconds % 3600) // 60
-                        time_str = f"{hours}h {minutes}m"
+                        total_hours = delta.total_seconds() / 3600
+                        if total_hours < 1:
+                            minutes = int(delta.total_seconds() / 60)
+                            time_str = f"{minutes}m"
+                        elif total_hours < 24:
+                            hours = int(total_hours)
+                            minutes = int((total_hours - hours) * 60)
+                            time_str = f"{hours}h {minutes}m"
+                        else:
+                            days = delta.days
+                            hours = int((total_hours - days * 24))
+                            time_str = f"{days}d {hours}h"
                     except:
-                        time_str = "?"
+                        time_str = None
                 else:
-                    time_str = "?"
+                    time_str = None
                 
+                # Monta mensagem da posição
                 msg += f"{i}. *{coin}/USDT {side}*\n"
+                
+                if size > 0:
+                    msg += f"   📏 Qtd: `{size:.4f}` {coin}\n"
+                
                 msg += f"   💰 Tamanho: `${size_usd:.2f}`\n"
+                
+                if leverage > 1:
+                    msg += f"   ⚡ Alavancagem: `{leverage:.0f}x`\n"
+                
                 msg += f"   📊 Entry: `${entry:.4f}`\n"
-                msg += f"   💹 Atual: `${current:.4f}` ({pnl_pct:+.2f}%)\n"
-                msg += f"   💵 PnL: `${pnl:+.2f}`\n"
-                msg += f"   ⏱️ Aberta há: {time_str}\n\n"
+                msg += f"   💹 Atual: `${current:.4f}` ({price_change:+.2f}%)\n"
+                msg += f"   {pnl_emoji} PnL: `${pnl:+.2f}` ({pnl_pct:+.2f}%)\n"
+                
+                if time_str:
+                    msg += f"   ⏱️ Aberta: `{time_str}`\n"
+                
+                msg += "\n"
                 
                 total_pnl += pnl
+                total_size += size_usd
             
-            msg += f"💰 *PnL Total Não-Realizado:* `${total_pnl:+.2f}`"
+            # Resumo
+            total_pnl_pct = (total_pnl / total_size * 100) if total_size > 0 else 0
             
-            self.bot.send_message(chat_id, msg)
+            msg += "━━━━━━━━━━━━━━━━━━━━\n"
+            msg += f"💰 *PnL Total:* `${total_pnl:+.2f}` ({total_pnl_pct:+.1f}%)\n"
+            msg += f"📊 *Capital:* `${total_size:.2f}`\n\n"
+            msg += f"⏰ _{datetime.utcnow().strftime('%d/%m %H:%M')} UTC_"
+            
+            logger.info(f"[TELEGRAM] Enviando mensagem")
+            self.bot.send_message(chat_id, msg, parse_mode='Markdown')
+            logger.info("[TELEGRAM] Sucesso!")
             
         except Exception as e:
-            logger.error(f"[TELEGRAM] Erro ao enviar posições: {e}")
-            self.bot.send_message(chat_id, "❌ Erro ao obter posições.")
+            logger.error(f"[TELEGRAM] Erro FATAL: {e}", exc_info=True)
+            try:
+                self.bot.send_message(
+                    chat_id, 
+                    f"❌ Erro ao obter posições.\n\nDetalhes: {str(e)[:100]}"
+                )
+            except:
+                logger.error("[TELEGRAM] Falha ao enviar erro")
     
     # ========== BOTÃO 3: PNL ==========
     

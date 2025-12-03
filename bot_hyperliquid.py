@@ -1491,7 +1491,7 @@ def main():
         'openai_api_key': os.getenv('OPENAI_API_KEY'),
         'openai_model_scalp': os.getenv('OPENAI_MODEL', 'gpt-4o-mini'),
         'live_trading': os.getenv('LIVE_TRADING', 'false').lower() == 'true',
-        'risk_per_trade_pct': float(os.getenv('RISK_PER_TRADE_PCT', '10.0')),
+        'risk_per_trade_pct': float(os.getenv('RISK_PER_TRADE_PCT', '5.0')),  # ← CORRIGIDO: 5% em vez de 10%
         'max_daily_drawdown_pct': float(os.getenv('MAX_DAILY_DRAWDOWN_PCT', '10.0')),
         'max_open_trades': int(os.getenv('MAX_OPEN_TRADES', '10')),
         'max_leverage': int(os.getenv('MAX_LEVERAGE', '50')),
