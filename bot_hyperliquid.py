@@ -776,17 +776,27 @@ class HyperliquidBot:
                 if not hasattr(self, 'technical_analysis'):
                     self.technical_analysis = TechnicalAnalysis()
                 
-                # Análise de estrutura
-                structure = self.technical_analysis.analyze_structure(candles, "15m")
+                # NORMALIZA CANDLES ANTES DA ANÁLISE
+                normalized_candles = self.technical_analysis.normalize_candles(candles, logger_instance=self.logger)
                 
-                # Padrões
-                patterns = self.technical_analysis.detect_patterns(candles)
-                
-                # EMA confluence (opcional)
-                ema = self.technical_analysis.check_ema_confluence(candles)
-                
-                # Liquidez
-                liquidity = self.technical_analysis.identify_liquidity_zones(candles)
+                if not normalized_candles:
+                    self.logger.warning(f"[TECHNICAL ANALYSIS] {pair}: Nenhum candle válido após normalização. Pulando análise técnica.")
+                    structure = None
+                    patterns = []
+                    ema = None
+                    liquidity = None
+                else:
+                    # Análise de estrutura
+                    structure = self.technical_analysis.analyze_structure(normalized_candles, "15m")
+                    
+                    # Padrões
+                    patterns = self.technical_analysis.detect_patterns(normalized_candles)
+                    
+                    # EMA confluence (opcional)
+                    ema = self.technical_analysis.check_ema_confluence(normalized_candles)
+                    
+                    # Liquidez
+                    liquidity = self.technical_analysis.identify_liquidity_zones(normalized_candles)
                 
                 # Adiciona ao contexto
                 context['phase2'] = {

@@ -26,48 +26,97 @@ class TechnicalAnalysis:
         logger.info("[TECHNICAL ANALYSIS] Inicializado")
     
     @staticmethod
-    def normalize_candles(candles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def normalize_candles(raw_candles: List[Any], logger_instance: Optional[Any] = None) -> List[Dict[str, Any]]:
         """
-        Normaliza formato de candles para padrão esperado
+        Converte candles no formato bruto da Hyperliquid para um formato padronizado:
+        {
+            "open": float,
+            "high": float,
+            "low": float,
+            "close": float,
+            "volume": float,
+            "timestamp": int/float (opcional)
+        }
         
-        Aceita tanto:
+        Aceita:
         - Formato Hyperliquid: {'o', 'h', 'l', 'c', 'v', 't'}
         - Formato padrão: {'open', 'high', 'low', 'close', 'volume'}
+        - Lista tipo [timestamp, open, high, low, close, volume]
+        
+        Ignora candles inválidos e loga avisos em nível DEBUG sem quebrar o fluxo.
+        Sempre retorna uma lista (possivelmente vazia).
         
         Args:
-            candles: Lista de candles em qualquer formato
+            raw_candles: Lista de candles em qualquer formato
+            logger_instance: Logger opcional para debug
             
         Returns:
-            Lista de candles normalizados {'open', 'high', 'low', 'close', 'volume'}
+            Lista de candles normalizados
         """
-        normalized = []
+        if not raw_candles:
+            return []
         
-        for candle in candles:
+        normalized = []
+        log = logger_instance or logger
+        
+        for item in raw_candles:
             try:
-                # Se já está no formato padrão, usa direto
-                if 'open' in candle and 'high' in candle:
-                    normalized.append({
-                        'open': float(candle.get('open', 0)),
-                        'high': float(candle.get('high', 0)),
-                        'low': float(candle.get('low', 0)),
-                        'close': float(candle.get('close', 0)),
-                        'volume': float(candle.get('volume', 0))
-                    })
-                # Se está no formato Hyperliquid (o, h, l, c, v)
-                elif 'o' in candle and 'h' in candle:
-                    normalized.append({
-                        'open': float(candle.get('o', 0)),
-                        'high': float(candle.get('h', 0)),
-                        'low': float(candle.get('l', 0)),
-                        'close': float(candle.get('c', 0)),
-                        'volume': float(candle.get('v', 0))
-                    })
+                # CASO 1: Se é lista tipo [timestamp, open, high, low, close, volume]
+                if isinstance(item, (list, tuple)):
+                    if len(item) >= 5:
+                        ts = item[0] if len(item) > 5 else None
+                        o, h, l, c, v = item[1:6] if len(item) > 5 else item[:5]
+                        
+                        candle = {
+                            'open': float(o),
+                            'high': float(h),
+                            'low': float(l),
+                            'close': float(c),
+                            'volume': float(v)
+                        }
+                        
+                        if ts is not None:
+                            candle['timestamp'] = ts
+                        
+                        normalized.append(candle)
+                    else:
+                        log.debug(f"[TECHNICAL ANALYSIS] Candle inválido ignorado (lista muito curta): {item}")
+                        continue
+                
+                # CASO 2: Se é dict
+                elif isinstance(item, dict):
+                    # Tenta pegar valores com prioridade para formato compacto
+                    o = item.get('o') or item.get('open')
+                    h = item.get('h') or item.get('high')
+                    l = item.get('l') or item.get('low')
+                    c = item.get('c') or item.get('close')
+                    v = item.get('v') or item.get('volume', 0)  # Volume pode ser 0
+                    ts = item.get('t') or item.get('timestamp')
+                    
+                    # Valida campos essenciais
+                    if o is None or h is None or l is None or c is None:
+                        log.debug(f"[TECHNICAL ANALYSIS] Candle inválido ignorado (campos faltando): {item}")
+                        continue
+                    
+                    candle = {
+                        'open': float(o),
+                        'high': float(h),
+                        'low': float(l),
+                        'close': float(c),
+                        'volume': float(v)
+                    }
+                    
+                    if ts is not None:
+                        candle['timestamp'] = ts
+                    
+                    normalized.append(candle)
+                
                 else:
-                    logger.warning(f"[TECHNICAL ANALYSIS] Candle com formato desconhecido: {candle.keys()}")
+                    log.debug(f"[TECHNICAL ANALYSIS] Candle com tipo desconhecido ignorado: {type(item)}")
                     continue
                     
-            except (ValueError, TypeError) as e:
-                logger.error(f"[TECHNICAL ANALYSIS] Erro ao normalizar candle: {e}")
+            except (ValueError, TypeError, KeyError, IndexError) as e:
+                log.debug(f"[TECHNICAL ANALYSIS] Candle inválido ignorado: {item} ({e})")
                 continue
         
         return normalized
@@ -398,69 +447,90 @@ class TechnicalAnalysis:
     
     def _is_bullish_engulfing(self, prev: Dict, current: Dict) -> bool:
         """Detecta engulfing bullish"""
-        prev_body = abs(prev['close'] - prev['open'])
-        curr_body = abs(current['close'] - current['open'])
-        
-        return (prev['close'] < prev['open'] and  # Prev bearish
-                current['close'] > current['open'] and  # Current bullish
-                curr_body > prev_body * 1.5 and  # Corpo maior
-                current['close'] > prev['open'])  # Engole anterior
+        try:
+            prev_body = abs(prev.get('close', 0) - prev.get('open', 0))
+            curr_body = abs(current.get('close', 0) - current.get('open', 0))
+            
+            return (prev.get('close', 0) < prev.get('open', 0) and  # Prev bearish
+                    current.get('close', 0) > current.get('open', 0) and  # Current bullish
+                    curr_body > prev_body * 1.5 and  # Corpo maior
+                    current.get('close', 0) > prev.get('open', 0))  # Engole anterior
+        except (TypeError, ValueError):
+            return False
     
     def _is_bearish_engulfing(self, prev: Dict, current: Dict) -> bool:
         """Detecta engulfing bearish"""
-        prev_body = abs(prev['close'] - prev['open'])
-        curr_body = abs(current['close'] - current['open'])
-        
-        return (prev['close'] > prev['open'] and  # Prev bullish
-                current['close'] < current['open'] and  # Current bearish
-                curr_body > prev_body * 1.5 and  # Corpo maior
-                current['close'] < prev['open'])  # Engole anterior
+        try:
+            prev_body = abs(prev.get('close', 0) - prev.get('open', 0))
+            curr_body = abs(current.get('close', 0) - current.get('open', 0))
+            
+            return (prev.get('close', 0) > prev.get('open', 0) and  # Prev bullish
+                    current.get('close', 0) < current.get('open', 0) and  # Current bearish
+                    curr_body > prev_body * 1.5 and  # Corpo maior
+                    current.get('close', 0) < prev.get('open', 0))  # Engole anterior
+        except (TypeError, ValueError):
+            return False
     
     def _is_pin_bar(self, candle: Dict) -> bool:
         """Detecta pin bar"""
-        body = abs(candle['close'] - candle['open'])
-        total = candle['high'] - candle['low']
-        
-        if total == 0:
+        try:
+            body = abs(candle.get('close', 0) - candle.get('open', 0))
+            total = candle.get('high', 0) - candle.get('low', 0)
+            
+            if total == 0:
+                return False
+            
+            # Pavio > 2x corpo
+            upper_wick = candle.get('high', 0) - max(candle.get('open', 0), candle.get('close', 0))
+            lower_wick = min(candle.get('open', 0), candle.get('close', 0)) - candle.get('low', 0)
+            
+            return (upper_wick > body * 2 or lower_wick > body * 2)
+        except (TypeError, ValueError):
             return False
-        
-        # Pavio > 2x corpo
-        upper_wick = candle['high'] - max(candle['open'], candle['close'])
-        lower_wick = min(candle['open'], candle['close']) - candle['low']
-        
-        return (upper_wick > body * 2 or lower_wick > body * 2)
     
     def _is_doji(self, candle: Dict) -> bool:
         """Detecta doji"""
-        body = abs(candle['close'] - candle['open'])
-        total = candle['high'] - candle['low']
-        
-        if total == 0:
+        try:
+            body = abs(candle.get('close', 0) - candle.get('open', 0))
+            total = candle.get('high', 0) - candle.get('low', 0)
+            
+            if total == 0:
+                return False
+            
+            # Corpo < 10% do total
+            return (body / total) < 0.1
+        except (TypeError, ValueError, ZeroDivisionError):
             return False
-        
-        # Corpo < 10% do total
-        return (body / total) < 0.1
     
     def _is_inside_bar(self, prev: Dict, current: Dict) -> bool:
         """Detecta inside bar"""
-        return (current['high'] < prev['high'] and 
-                current['low'] > prev['low'])
+        try:
+            return (current.get('high', 0) < prev.get('high', 0) and 
+                    current.get('low', 0) > prev.get('low', 0))
+        except (TypeError, ValueError):
+            return False
     
     def _is_hammer(self, candle: Dict) -> bool:
         """Detecta hammer (bullish)"""
-        body = abs(candle['close'] - candle['open'])
-        lower_wick = min(candle['open'], candle['close']) - candle['low']
-        upper_wick = candle['high'] - max(candle['open'], candle['close'])
-        
-        return (lower_wick > body * 2 and upper_wick < body * 0.5)
+        try:
+            body = abs(candle.get('close', 0) - candle.get('open', 0))
+            lower_wick = min(candle.get('open', 0), candle.get('close', 0)) - candle.get('low', 0)
+            upper_wick = candle.get('high', 0) - max(candle.get('open', 0), candle.get('close', 0))
+            
+            return (lower_wick > body * 2 and upper_wick < body * 0.5)
+        except (TypeError, ValueError):
+            return False
     
     def _is_shooting_star(self, candle: Dict) -> bool:
         """Detecta shooting star (bearish)"""
-        body = abs(candle['close'] - candle['open'])
-        upper_wick = candle['high'] - max(candle['open'], candle['close'])
-        lower_wick = min(candle['open'], candle['close']) - candle['low']
-        
-        return (upper_wick > body * 2 and lower_wick < body * 0.5)
+        try:
+            body = abs(candle.get('close', 0) - candle.get('open', 0))
+            upper_wick = candle.get('high', 0) - max(candle.get('open', 0), candle.get('close', 0))
+            lower_wick = min(candle.get('open', 0), candle.get('close', 0)) - candle.get('low', 0)
+            
+            return (upper_wick > body * 2 and lower_wick < body * 0.5)
+        except (TypeError, ValueError):
+            return False
     
     # === EMAs ===
     
