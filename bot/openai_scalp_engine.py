@@ -84,11 +84,15 @@ class OpenAiScalpEngine:
                 break
                 
             except openai.RateLimitError as e:
+                error_msg = str(e)
                 if attempt == max_retries - 1:
-                    # Última tentativa falhou
-                    logger.error(f"❌ [AI] OpenAI RATE LIMIT persistente: {e}")
-                    logger.warning("⚠️  OpenAI Scalp Engine temporariamente desabilitado. Remova OPENAI_API_KEY ou aguarde reset do limite.")
-                    self.enabled = False  # Desabilita temporariamente
+                    # Verifica se é insufficient_quota (permanente) vs rate limit temporário
+                    if 'insufficient_quota' in error_msg.lower():
+                        logger.error(f"❌ [AI] OpenAI RATE LIMIT persistente: Error code: 429 - {e}")
+                        logger.warning("⚠️  OpenAI Scalp Engine temporariamente desabilitado. Remova OPENAI_API_KEY ou aguarde reset do limite.")
+                        self.enabled = False  # Desabilita permanentemente até reiniciar
+                    else:
+                        logger.warning(f"⚠️ [OPENAI] Rate limit temporário após {max_retries} tentativas. Tentará novamente na próxima iteração.")
                     return []
                 else:
                     # Tenta novamente

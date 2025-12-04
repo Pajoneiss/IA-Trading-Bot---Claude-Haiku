@@ -506,7 +506,7 @@ class HyperliquidBot:
         
         # ========== CONTROLE DE CHAMADAS IA ==========
         # Constante para intervalo de SCALP (fixo em código)
-        self.SCALP_CALL_INTERVAL_MINUTES = 5
+        self.SCALP_CALL_INTERVAL_MINUTES = 30
         
         # IA SWING (Claude) - intervalo configurável
         self.ai_call_interval = int(os.getenv('AI_CALL_INTERVAL_MINUTES', '15')) * 60  # Em segundos

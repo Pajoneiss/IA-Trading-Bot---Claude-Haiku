@@ -24,7 +24,7 @@ class CryptoPanicAPI:
         else:
             logger.info("[CRYPTOPANIC] API key não configurada (modo limitado)")
     
-    def get_important_news(self, limit: int = 10) -> List[Dict]:
+    def get_important_news(self, limit: int = 20) -> List[Dict]:
         """
         Busca notícias importantes
         
