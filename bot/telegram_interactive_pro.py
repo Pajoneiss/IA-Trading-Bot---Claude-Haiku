@@ -744,9 +744,26 @@ class TelegramInteractivePRO:
                 )
                 return
             
-            # Calcula total
-            total_pnl = sum(pos.get('unrealized_pnl', 0) for pos in positions)
-            total_pnl_pct = 0  # TODO: Calcular baseado no equity total
+            # Calcula PnL total em USD
+            total_pnl = 0.0
+            for pos in positions:
+                symbol = pos.get('symbol', 'UNKNOWN')
+                size = pos.get('size', 0)
+                entry_price = pos.get('entry_price', 0)
+                current_price = prices.get(symbol, entry_price)
+                side = pos.get('side', 'long')
+                
+                # Calcula PnL em USD
+                try:
+                    current_price = float(current_price)
+                    if side == 'long':
+                        pnl_usd = (current_price - entry_price) * size
+                    else:
+                        pnl_usd = (entry_price - current_price) * size
+                    pos['_pnl_usd'] = pnl_usd
+                    total_pnl += pnl_usd
+                except:
+                    pos['_pnl_usd'] = 0.0
             
             msg = (
                 "🛑 *FECHAR TODAS AS POSIÇÕES*\n\n"
@@ -759,10 +776,10 @@ class TelegramInteractivePRO:
             )
             
             for i, pos in enumerate(positions, 1):
-                coin = pos.get('coin', 'UNKNOWN')
+                symbol = pos.get('symbol', 'UNKNOWN')
                 side = pos.get('side', 'unknown').upper()
-                pnl = pos.get('unrealized_pnl', 0)
-                msg += f"{i}. {coin} {side}: `${pnl:+.2f}`\n"
+                pnl = pos.get('_pnl_usd', 0)
+                msg += f"{i}. {symbol} {side}: `${pnl:+.2f}`\n"
             
             msg += "\nEsta ação é *IRREVERSÍVEL*!"
             
@@ -801,20 +818,41 @@ class TelegramInteractivePRO:
             total_realized = 0.0
             
             for pos in positions:
+                symbol = pos.get('symbol', 'UNKNOWN')
                 try:
-                    coin = pos.get('coin', 'UNKNOWN')
-                    pnl = pos.get('unrealized_pnl', 0)
+                    size = pos.get('size', 0)
+                    entry_price = pos.get('entry_price', 0)
+                    current_price = prices.get(symbol, entry_price)
+                    side = pos.get('side', 'long')
                     
-                    # TODO: Implementar fechamento real via Hyperliquid
-                    # Por enquanto, apenas mock
-                    # success = self.main_bot.close_position(coin)
+                    # Calcula PnL em USD
+                    try:
+                        current_price = float(current_price)
+                        if side == 'long':
+                            pnl_usd = (current_price - entry_price) * size
+                        else:
+                            pnl_usd = (entry_price - current_price) * size
+                    except:
+                        pnl_usd = 0.0
                     
-                    results.append(f"✅ {coin}: `${pnl:+.2f}`")
-                    total_realized += pnl
+                    # Executa fechamento real via _execute_close
+                    close_action = {
+                        'symbol': symbol,
+                        'action': 'close',
+                        'reason': 'telegram_close_all',
+                        'side': side,
+                        'current_price': current_price
+                    }
+                    
+                    # Chama o método do bot principal
+                    self.main_bot._execute_close(close_action, prices)
+                    
+                    results.append(f"✅ {symbol}: `${pnl_usd:+.2f}`")
+                    total_realized += pnl_usd
                     
                 except Exception as e:
-                    logger.error(f"[TELEGRAM] Erro ao fechar {coin}: {e}")
-                    results.append(f"❌ {coin}: Erro")
+                    logger.error(f"[TELEGRAM] Erro ao fechar {symbol}: {e}")
+                    results.append(f"❌ {symbol}: Erro")
             
             # Mensagem de resultado
             msg = "🎯 *POSIÇÕES FECHADAS*\n\n"
