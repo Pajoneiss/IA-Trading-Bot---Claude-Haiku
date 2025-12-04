@@ -464,8 +464,8 @@ class TelegramInteractivePRO:
                     
                     logger.info(f"[TELEGRAM] Wallet: {wallet[:10]}...")
                     
-                    # User state
-                    user_state = self.main_bot.client.info.user_state(wallet)
+                    # User state - usa método direto do client
+                    user_state = self.main_bot.client.get_user_state()
                     
                     if user_state and 'assetPositions' in user_state:
                         asset_positions = user_state['assetPositions']
