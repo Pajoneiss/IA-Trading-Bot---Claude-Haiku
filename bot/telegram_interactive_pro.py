@@ -455,10 +455,12 @@ class TelegramInteractivePRO:
                 try:
                     logger.info("[TELEGRAM] Buscando direto do Hyperliquid...")
                     
-                    # Wallet address
+                    # Wallet address - tenta múltiplas fontes
                     wallet = getattr(self.main_bot, 'wallet_address', None)
                     if not wallet:
-                        wallet = self.main_bot.account.address
+                        wallet = getattr(self.main_bot.client, 'wallet_address', None)
+                    if not wallet:
+                        raise AttributeError("wallet_address não encontrado")
                     
                     logger.info(f"[TELEGRAM] Wallet: {wallet[:10]}...")
                     

@@ -131,6 +131,11 @@ class MarketIntelligence:
             response = requests.get(url, timeout=5)
             data = response.json()
             
+            # Verifica se resposta contém 'data' (pode ser erro da API)
+            if 'data' not in data:
+                logger.debug(f"[MARKET_INTEL] CoinGecko retornou resposta sem 'data'")
+                return 50.0
+            
             dominance = data['data']['market_cap_percentage']['btc']
             self._set_cache(cache_key, dominance)
             return round(dominance, 2)
@@ -149,6 +154,11 @@ class MarketIntelligence:
             url = "https://api.coingecko.com/api/v3/global"
             response = requests.get(url, timeout=5)
             data = response.json()
+            
+            # Verifica se resposta contém 'data' (pode ser erro da API)
+            if 'data' not in data:
+                logger.debug(f"[MARKET_INTEL] CoinGecko retornou resposta sem 'data'")
+                return 15.0
             
             dominance = data['data']['market_cap_percentage']['eth']
             self._set_cache(cache_key, dominance)
@@ -206,6 +216,11 @@ class MarketIntelligence:
             response = requests.get(url, timeout=5)
             data = response.json()
             
+            # Verifica se resposta contém 'data' (pode ser erro da API)
+            if 'data' not in data:
+                logger.debug(f"[MARKET_INTEL] CoinGecko retornou resposta sem 'data': {data.get('error', 'unknown')}")
+                return 0
+            
             mcap = data['data']['total_market_cap']['usd']
             self._set_cache(cache_key, mcap)
             return mcap
@@ -224,6 +239,11 @@ class MarketIntelligence:
             url = "https://api.coingecko.com/api/v3/global"
             response = requests.get(url, timeout=5)
             data = response.json()
+            
+            # Verifica se resposta contém 'data' (pode ser erro da API)
+            if 'data' not in data:
+                logger.debug(f"[MARKET_INTEL] CoinGecko retornou resposta sem 'data': {data.get('error', 'unknown')}")
+                return 0
             
             volume = data['data']['total_volume']['usd']
             self._set_cache(cache_key, volume)
