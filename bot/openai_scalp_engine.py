@@ -56,26 +56,51 @@ class OpenAiScalpEngine:
             
         prompt = self._build_scalp_prompt(market_contexts, account_info, open_positions, risk_limits)
         
-        try:
-            logger.debug("Consultando OpenAI (Scalp)...")
-            
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "Você é um trader especialista em SCALP na Hyperliquid."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.4,
-                max_tokens=1000,
-                response_format={"type": "json_object"}
-            )
-        except openai.RateLimitError as e:
-            logger.error(f"❌ [AI] OpenAI RATE LIMIT atingido: {e}")
-            logger.warning("⚠️  OpenAI Scalp Engine temporariamente desabilitado. Remova OPENAI_API_KEY ou aguarde reset do limite.")
-            self.enabled = False  # Desabilita temporariamente
-            return []
-        except openai.APIError as e:
-            logger.error(f"❌ [AI] Erro na API OpenAI: {e}")
+        # Retry com exponential backoff
+        import time
+        max_retries = 2  # Menos retries que Hyperliquid (OpenAI é mais caro)
+        
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    wait_time = 5 * (2 ** attempt)  # 10s, 20s
+                    logger.warning(f"[OPENAI] Retry {attempt+1}/{max_retries}, aguardando {wait_time}s...")
+                    time.sleep(wait_time)
+                
+                logger.debug("Consultando OpenAI (Scalp)...")
+                
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": "Você é um trader especialista em SCALP na Hyperliquid."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.4,
+                    max_tokens=1000,
+                    response_format={"type": "json_object"}
+                )
+                
+                # Se chegou aqui, sucesso!
+                break
+                
+            except openai.RateLimitError as e:
+                if attempt == max_retries - 1:
+                    # Última tentativa falhou
+                    logger.error(f"❌ [AI] OpenAI RATE LIMIT persistente: {e}")
+                    logger.warning("⚠️  OpenAI Scalp Engine temporariamente desabilitado. Remova OPENAI_API_KEY ou aguarde reset do limite.")
+                    self.enabled = False  # Desabilita temporariamente
+                    return []
+                else:
+                    # Tenta novamente
+                    logger.warning(f"⚠️  [OPENAI] Rate limit (tentativa {attempt+1}/{max_retries})")
+                    continue
+                    
+            except openai.APIError as e:
+                logger.error(f"❌ [AI] Erro na API OpenAI: {e}")
+                return []
+        
+        # Se chegou aqui sem response, algo deu errado
+        if 'response' not in locals():
             return []
             
             response_text = response.choices[0].message.content

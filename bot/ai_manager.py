@@ -20,10 +20,10 @@ class AIManager:
         
         # Configurações de intervalo
         # Swing: intervalo maior (ex: 15-60 min)
-        self.swing_interval_seconds = self.config.get('swing_interval_seconds', 900)  # 15 min default
+        self.swing_interval_seconds = self.config.get('swing_interval_seconds', 1800)  # 30 min default (era 15)
         
         # Scalp: intervalo por símbolo (cooldown)
-        self.scalp_symbol_cooldown = self.config.get('scalp_symbol_cooldown', 300)    # 5 min default
+        self.scalp_symbol_cooldown = self.config.get('scalp_symbol_cooldown', 900)    # 15 min default (era 5)
         
         # Estado interno
         self.last_swing_call = 0

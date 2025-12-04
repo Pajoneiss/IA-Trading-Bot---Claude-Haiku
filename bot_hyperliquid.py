@@ -143,32 +143,91 @@ class HyperliquidBotClient:
     
     def get_user_state(self) -> Dict[str, Any]:
         """Obtém estado completo da conta"""
+        import time
+        
         payload = {
             "type": "clearinghouseState",
             "user": self.wallet_address
         }
         
-        response = self.requests.post(self.info_url, json=payload, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+        # Rate limiting com retry
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Aguarda entre chamadas
+                if attempt > 0:
+                    wait_time = 2 ** attempt  # Exponential backoff: 2s, 4s
+                    self.logger.warning(f"[HYPERLIQUID] Retry {attempt+1}/{max_retries}, aguardando {wait_time}s...")
+                    time.sleep(wait_time)
+                
+                response = self.requests.post(self.info_url, json=payload, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+                
+                # Formata resposta
+                return {
+                    'account_value': float(data.get('marginSummary', {}).get('accountValue', 0)),
+                    'total_margin_used': float(data.get('marginSummary', {}).get('totalMarginUsed', 0)),
+                    'withdrawable': float(data.get('withdrawable', 0)),
+                    'assetPositions': data.get('assetPositions', [])
+                }
+                
+            except self.requests.exceptions.HTTPError as e:
+                if e.response.status_code == 429:
+                    # Rate limited
+                    if attempt == max_retries - 1:
+                        self.logger.error("[HYPERLIQUID] Rate limit persistente após retries")
+                        raise
+                    # Continua para próxima tentativa
+                    continue
+                else:
+                    # Outro erro HTTP
+                    raise
+            
+            except self.requests.exceptions.Timeout:
+                self.logger.warning(f"[HYPERLIQUID] Timeout na tentativa {attempt+1}")
+                if attempt == max_retries - 1:
+                    raise
+                continue
         
-        # Formata resposta
-        return {
-            'account_value': float(data.get('marginSummary', {}).get('accountValue', 0)),
-            'total_margin_used': float(data.get('marginSummary', {}).get('totalMarginUsed', 0)),
-            'withdrawable': float(data.get('withdrawable', 0)),
-            'assetPositions': data.get('assetPositions', [])
-        }
+        raise Exception("Max retries atingido")
     
     def get_all_mids(self) -> Dict[str, float]:
         """Obtém preços mid de todos os pares"""
+        import time
+        
         payload = {"type": "allMids"}
         
-        response = self.requests.post(self.info_url, json=payload, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        # Converte valores para float pois API retorna strings
-        return {k: float(v) for k, v in data.items()}
+        # Rate limiting com retry
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    wait_time = 2 ** attempt
+                    self.logger.warning(f"[HYPERLIQUID] get_all_mids retry {attempt+1}, aguardando {wait_time}s...")
+                    time.sleep(wait_time)
+                
+                response = self.requests.post(self.info_url, json=payload, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+                # Converte valores para float pois API retorna strings
+                return {k: float(v) for k, v in data.items()}
+                
+            except self.requests.exceptions.HTTPError as e:
+                if e.response.status_code == 429:
+                    if attempt == max_retries - 1:
+                        self.logger.error("[HYPERLIQUID] Rate limit em get_all_mids")
+                        raise
+                    continue
+                else:
+                    raise
+            
+            except self.requests.exceptions.Timeout:
+                if attempt == max_retries - 1:
+                    raise
+                continue
+        
+        raise Exception("Max retries atingido")
     
     def get_candles(self, coin: str, interval: str = "1h", limit: int = 100) -> List[Dict]:
         """Obtém candles históricos"""
