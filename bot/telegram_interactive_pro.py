@@ -203,6 +203,13 @@ class TelegramInteractivePRO:
             except Exception as e:
                 logger.error(f"[TELEGRAM] Erro em Modo: {e}")
         
+        @self.bot.message_handler(func=lambda m: m.text and m.text == "🛡 Risco")
+        def handle_risco_button(message):
+            try:
+                self._send_risk_status(message.chat.id)
+            except Exception as e:
+                logger.error(f"[TELEGRAM] Erro em Risco: {e}")
+        
         # === PHASE 4: COMANDOS DE PERFORMANCE ===
         @self.bot.message_handler(commands=['pnl'])
         def handle_pnl_command(message):
@@ -229,6 +236,15 @@ class TelegramInteractivePRO:
                 logger.error(f"[TELEGRAM] Erro no comando /modo: {e}")
                 self.bot.send_message(message.chat.id, f"❌ Erro ao exibir modos: {e}")
         
+        # === PHASE 6: COMANDO DE RISCO ===
+        @self.bot.message_handler(commands=['risco'])
+        def handle_risco_command(message):
+            try:
+                self._send_risk_status(message.chat.id)
+            except Exception as e:
+                logger.error(f"[TELEGRAM] Erro no comando /risco: {e}")
+                self.bot.send_message(message.chat.id, f"❌ Erro ao exibir risco: {e}")
+        
         # Callback handler (para confirmações)
         @self.bot.callback_query_handler(func=lambda call: True)
         def callback_query(call):
@@ -242,6 +258,20 @@ class TelegramInteractivePRO:
                 elif call.data.startswith("modo_"):
                     mode_name = call.data.replace("modo_", "")
                     self._change_mode(call.message.chat.id, mode_name)
+                
+                # Phase 6: Callbacks de risco
+                elif call.data == "risk_force_cooldown":
+                    self._handle_force_cooldown(call.message.chat.id)
+                elif call.data == "risk_reset_daily_confirm":
+                    self._ask_reset_daily_confirmation(call.message.chat.id)
+                elif call.data == "risk_reset_daily_execute":
+                    self._execute_reset_daily(call.message.chat.id)
+                elif call.data == "risk_reset_weekly_confirm":
+                    self._ask_reset_weekly_confirmation(call.message.chat.id)
+                elif call.data == "risk_reset_weekly_execute":
+                    self._execute_reset_weekly(call.message.chat.id)
+                elif call.data.startswith("risk_cancel"):
+                    self.bot.send_message(call.message.chat.id, "❌ Operação cancelada", parse_mode=None)
                     
                 self.bot.answer_callback_query(call.id)
             except Exception as e:
@@ -270,11 +300,11 @@ class TelegramInteractivePRO:
             types.KeyboardButton("🎚️ Modo")  # Phase 5: Botão de Modo
         )
         
-        # Linha 3: Informações
+        # Linha 3: Informações e Risco
         keyboard.row(
             types.KeyboardButton("📰 Notícias"),
             types.KeyboardButton("💹 Mercado"),
-            types.KeyboardButton("🧠 IA Info")
+            types.KeyboardButton("🛡 Risco")  # Phase 6: Botão de Risco
         )
         
         return keyboard
@@ -1375,6 +1405,222 @@ class TelegramInteractivePRO:
                 f"❌ Erro: {str(e)[:100]}",
                 parse_mode=None
             )
+    
+    # ========== PHASE 6: RISK STATUS & CONTROLS ==========
+    
+    def _send_risk_status(self, chat_id: int):
+        """
+        Envia status de risco com controles
+        """
+        try:
+            # Pega risk manager do bot principal
+            risk_manager = getattr(self.main_bot, 'risk_manager', None)
+            
+            if not risk_manager:
+                self.bot.send_message(
+                    chat_id,
+                    "⚠️ Sistema de risco não disponível",
+                    parse_mode=None
+                )
+                return
+            
+            status = risk_manager.get_status()
+            
+            # Monta mensagem (texto simples para evitar erros)
+            msg = "🛡 STATUS DE RISCO\n"
+            msg += "=" * 30 + "\n\n"
+            
+            # Estado atual
+            state = status['state']
+            if state == 'RUNNING':
+                msg += "✅ Estado: OPERANDO NORMALMENTE\n\n"
+            elif state == 'COOLDOWN':
+                cooldown_end = datetime.fromtimestamp(status['cooldown_until']).strftime('%H:%M')
+                msg += f"⏸️ Estado: COOLDOWN até {cooldown_end}\n\n"
+            elif state == 'HALTED_DAILY':
+                msg += "🔴 Estado: CIRCUIT BREAKER DIÁRIO\n\n"
+            elif state == 'HALTED_WEEKLY':
+                msg += "🔴 Estado: CIRCUIT BREAKER SEMANAL\n\n"
+            elif state == 'HALTED_DRAWDOWN':
+                msg += "🔴 Estado: CIRCUIT BREAKER DRAWDOWN\n\n"
+            
+            # Métricas
+            msg += "📊 MÉTRICAS\n"
+            msg += f"• Equity Peak: ${status['equity_peak']:.2f}\n"
+            msg += f"• PnL Hoje: ${status['daily_pnl']:.2f} ({status['daily_pnl_pct']:.2f}%)\n"
+            msg += f"• PnL Semana: ${status['weekly_pnl']:.2f} ({status['weekly_pnl_pct']:.2f}%)\n"
+            msg += f"• Drawdown: {status['drawdown_pct']:.2f}%\n"
+            msg += f"• Losing Streak: {status['losing_streak']}\n\n"
+            
+            # Limites
+            limits = status['limits']
+            msg += "🚨 LIMITES\n"
+            msg += f"• Perda Diária Máx: {limits['daily_loss_limit_pct']:.1f}%\n"
+            msg += f"• Perda Semanal Máx: {limits['weekly_loss_limit_pct']:.1f}%\n"
+            msg += f"• Drawdown Máx: {limits['max_drawdown_pct']:.1f}%\n"
+            msg += f"• Losing Streak Máx: {limits['max_losing_streak']}\n"
+            
+            # Cria botões inline
+            from telebot import types
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            
+            # Botão Cooldown
+            if state == 'RUNNING':
+                btn_cooldown = types.InlineKeyboardButton(
+                    text="⏸️ Ativar Cooldown (60 min)",
+                    callback_data="risk_force_cooldown"
+                )
+                markup.add(btn_cooldown)
+            
+            # Botão Reset Diário (se não HALTED_DAILY)
+            if state != 'HALTED_DAILY':
+                btn_reset_daily = types.InlineKeyboardButton(
+                    text="🔄 Reset Diário",
+                    callback_data="risk_reset_daily_confirm"
+                )
+                markup.add(btn_reset_daily)
+            
+            # Botão Reset Semanal (se não HALTED_WEEKLY)
+            if state != 'HALTED_WEEKLY':
+                btn_reset_weekly = types.InlineKeyboardButton(
+                    text="🔄 Reset Semanal",
+                    callback_data="risk_reset_weekly_confirm"
+                )
+                markup.add(btn_reset_weekly)
+            
+            # Envia
+            self.bot.send_message(chat_id, msg, reply_markup=markup, parse_mode=None)
+            
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro ao enviar risk status: {e}", exc_info=True)
+            self.bot.send_message(
+                chat_id,
+                f"❌ Erro ao exibir status de risco: {str(e)[:100]}",
+                parse_mode=None
+            )
+    
+    def _handle_force_cooldown(self, chat_id: int):
+        """Ativa cooldown manual"""
+        try:
+            risk_manager = getattr(self.main_bot, 'risk_manager', None)
+            
+            if not risk_manager:
+                self.bot.send_message(chat_id, "⚠️ Sistema de risco não disponível", parse_mode=None)
+                return
+            
+            success = risk_manager.force_cooldown(source="telegram")
+            
+            if success:
+                msg = "✅ Cooldown ativado por 60 minutos\n\n"
+                msg += "O bot não abrirá novas posições até o fim do cooldown."
+                self.bot.send_message(chat_id, msg, parse_mode=None)
+            else:
+                self.bot.send_message(chat_id, "❌ Erro ao ativar cooldown", parse_mode=None)
+                
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro ao ativar cooldown: {e}")
+            self.bot.send_message(chat_id, f"❌ Erro: {str(e)[:100]}", parse_mode=None)
+    
+    def _ask_reset_daily_confirmation(self, chat_id: int):
+        """Pede confirmação para reset diário"""
+        try:
+            from telebot import types
+            
+            msg = "⚠️ CONFIRMAÇÃO NECESSÁRIA\n\n"
+            msg += "Tem certeza que deseja resetar os limites diários?\n\n"
+            msg += "Isso irá zerar:\n"
+            msg += "• PnL do dia\n"
+            msg += "• Losing streak\n"
+            msg += "• Circuit breaker diário (se ativo)\n\n"
+            msg += "Use com cuidado!"
+            
+            markup = types.InlineKeyboardMarkup(row_width=2)
+            btn_confirm = types.InlineKeyboardButton(
+                text="✅ Confirmar",
+                callback_data="risk_reset_daily_execute"
+            )
+            btn_cancel = types.InlineKeyboardButton(
+                text="❌ Cancelar",
+                callback_data="risk_cancel"
+            )
+            markup.add(btn_confirm, btn_cancel)
+            
+            self.bot.send_message(chat_id, msg, reply_markup=markup, parse_mode=None)
+            
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro na confirmação: {e}")
+    
+    def _execute_reset_daily(self, chat_id: int):
+        """Executa reset diário"""
+        try:
+            risk_manager = getattr(self.main_bot, 'risk_manager', None)
+            
+            if not risk_manager:
+                self.bot.send_message(chat_id, "⚠️ Sistema de risco não disponível", parse_mode=None)
+                return
+            
+            success = risk_manager.reset_daily_limits(source="telegram")
+            
+            if success:
+                msg = "✅ Limites diários resetados com sucesso\n\n"
+                msg += "PnL do dia zerado e circuit breaker diário desativado."
+                self.bot.send_message(chat_id, msg, parse_mode=None)
+            else:
+                self.bot.send_message(chat_id, "❌ Erro ao resetar limites", parse_mode=None)
+                
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro ao resetar daily: {e}")
+            self.bot.send_message(chat_id, f"❌ Erro: {str(e)[:100]}", parse_mode=None)
+    
+    def _ask_reset_weekly_confirmation(self, chat_id: int):
+        """Pede confirmação para reset semanal"""
+        try:
+            from telebot import types
+            
+            msg = "⚠️ CONFIRMAÇÃO NECESSÁRIA\n\n"
+            msg += "Tem certeza que deseja resetar os limites semanais?\n\n"
+            msg += "Isso irá zerar:\n"
+            msg += "• PnL da semana\n"
+            msg += "• Circuit breaker semanal (se ativo)\n\n"
+            msg += "Use com cuidado!"
+            
+            markup = types.InlineKeyboardMarkup(row_width=2)
+            btn_confirm = types.InlineKeyboardButton(
+                text="✅ Confirmar",
+                callback_data="risk_reset_weekly_execute"
+            )
+            btn_cancel = types.InlineKeyboardButton(
+                text="❌ Cancelar",
+                callback_data="risk_cancel"
+            )
+            markup.add(btn_confirm, btn_cancel)
+            
+            self.bot.send_message(chat_id, msg, reply_markup=markup, parse_mode=None)
+            
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro na confirmação: {e}")
+    
+    def _execute_reset_weekly(self, chat_id: int):
+        """Executa reset semanal"""
+        try:
+            risk_manager = getattr(self.main_bot, 'risk_manager', None)
+            
+            if not risk_manager:
+                self.bot.send_message(chat_id, "⚠️ Sistema de risco não disponível", parse_mode=None)
+                return
+            
+            success = risk_manager.reset_weekly_limits(source="telegram")
+            
+            if success:
+                msg = "✅ Limites semanais resetados com sucesso\n\n"
+                msg += "PnL da semana zerado e circuit breaker semanal desativado."
+                self.bot.send_message(chat_id, msg, parse_mode=None)
+            else:
+                self.bot.send_message(chat_id, "❌ Erro ao resetar limites", parse_mode=None)
+                
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro ao resetar weekly: {e}")
+            self.bot.send_message(chat_id, f"❌ Erro: {str(e)[:100]}", parse_mode=None)
     
     # ========== HELPERS ==========
     
