@@ -518,12 +518,13 @@ class HyperliquidBot:
             'scalp_symbol_cooldown': self.action_cooldown_seconds
         })
         
-        # IA SCALP (OpenAI) - intervalo fixo de 5 minutos
+        # IA SCALP (OpenAI) - intervalo fixo de 30 minutos
         self.scalp_call_interval = self.SCALP_CALL_INTERVAL_MINUTES * 60  # Em segundos
         self.last_scalp_ai_call = 0  # Timestamp da última chamada SCALP
         
         # Contador de iterações para OpenAI (reduz rate limit)
-        self.openai_analysis_interval = config.get('openai_analysis_interval', 5)  # Analisa 1 a cada N iterações
+        # Cada iteração = 60s, então 30 minutos = 30 iterações
+        self.openai_analysis_interval = self.SCALP_CALL_INTERVAL_MINUTES  # 30 min = 30 iterações
         self.iteration_counter = 0  # Contador de iterações
         
         # Cache de decisões
