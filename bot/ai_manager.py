@@ -61,7 +61,7 @@ class AIManager:
         Filtra quais símbolos são candidatos para SCALP.
         Regra de Ouro: NÃO operar símbolo que já tem posição aberta (Swing ou Scalp).
         
-        IMPORTANTE: Limita a 2 símbolos por iteração para evitar rate limit
+        IMPORTANTE: Limita a 20 símbolos por iteração (escalado para intervalo de 30 min)
         """
         candidates = []
         
@@ -86,9 +86,9 @@ class AIManager:
             
             candidates.append(symbol)
             
-            # LIMITE: Máximo 2 símbolos por iteração para evitar rate limit
-            if len(candidates) >= 2:
-                logger.info(f"[AIManager] Limitando análise SCALP a 2 símbolos por iteração (rate limit)")
+            # LIMITE: Máximo 20 símbolos por iteração (escalado para intervalo de 30 min)
+            if len(candidates) >= 20:
+                logger.info(f"[AIManager] Limitando análise SCALP a 20 símbolos por iteração")
                 break
             
         return candidates
