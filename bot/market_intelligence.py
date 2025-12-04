@@ -162,22 +162,29 @@ class MarketIntelligence:
         """
         Alt Season Index (0-100)
         API: BlockchainCenter.net (grátis)
+        Nota: API tem problema de certificado SSL, usando verify=False
         """
         cache_key = 'alt_season'
         if self._is_cache_valid(cache_key):
             return self.cache[cache_key]['value']
         
         try:
+            import urllib3
+            # Silencia warning de SSL apenas para essa request
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            
             url = "https://api.blockchaincenter.net/v1/altseason/now"
-            response = requests.get(url, timeout=5)
+            response = requests.get(url, timeout=5, verify=False)  # verify=False por problema no cert deles
             data = response.json()
             
             value = int(data['data']['altseason_index'])
             self._set_cache(cache_key, value)
+            logger.debug(f"[MARKET_INTEL] Alt Season Index: {value}")
             return value
             
         except Exception as e:
-            logger.warning(f"[MARKET_INTEL] Erro ao buscar Alt Season: {e}")
+            # Log menos verboso para não poluir os logs
+            logger.debug(f"[MARKET_INTEL] Alt Season API indisponível, usando fallback (50)")
             return 50
     
     def _is_alt_season(self) -> bool:
