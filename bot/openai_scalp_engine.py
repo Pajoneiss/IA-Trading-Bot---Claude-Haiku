@@ -102,117 +102,113 @@ class OpenAiScalpEngine:
         # Se chegou aqui sem response, algo deu errado
         if 'response' not in locals():
             return []
+        
+        response_text = response.choices[0].message.content
+        logger.debug(f"Resposta OpenAI (raw): {response_text[:300]}...")
+        
+        decisions = self._parse_ai_response(response_text)
+        
+        # Aplica filtros anti-overtrading
+        filtered_decisions = []
+        trade_count = 0
+        hold_count = 0
+        blocked_count = 0
+        
+        for dec in decisions:
+            dec['source'] = 'openai_scalp'
+            dec['style'] = 'scalp'
             
-            response_text = response.choices[0].message.content
-            logger.debug(f"Resposta OpenAI (raw): {response_text[:300]}...")
+            action = dec.get('action', 'hold')
             
-            decisions = self._parse_ai_response(response_text)
-            
-            # Aplica filtros anti-overtrading
-            filtered_decisions = []
-            trade_count = 0
-            hold_count = 0
-            blocked_count = 0
-            
-            for dec in decisions:
-                dec['source'] = 'openai_scalp'
-                dec['style'] = 'scalp'
+            if action == 'hold':
+                hold_count += 1
+                reason = dec.get('reason', 'Sem setup claro')
+                logger.info(f"🤚 [AI] IA SCALP decidiu HOLD: {reason}")
+                filtered_decisions.append(dec)
                 
-                action = dec.get('action', 'hold')
+            elif action == 'open':
+                symbol = dec.get('symbol', 'UNKNOWN')
                 
-                if action == 'hold':
-                    hold_count += 1
-                    reason = dec.get('reason', 'Sem setup claro')
-                    logger.info(f"🤚 [AI] IA SCALP decidiu HOLD: {reason}")
-                    filtered_decisions.append(dec)
-                    
-                elif action == 'open':
-                    symbol = dec.get('symbol', 'UNKNOWN')
-                    
-                    # Busca candles do símbolo para filtro de volatilidade
-                    candles = []
-                    for ctx in market_contexts:
-                        if ctx.get('symbol') == symbol:
-                            # Precisamos dos candles originais, não só do contexto
-                            # Vamos assumir que o bot passa candles no contexto ou pular esse filtro
-                            # Por ora, vamos aplicar os outros filtros
-                            break
-                    
-                    # Aplica filtros (sem candles por enquanto, será passado pelo bot)
-                    # Por ora, aplica apenas filtros que não dependem de candles
-                    can_trade, reason = self.filters.check_cooldown(symbol)
-                    if not can_trade:
-                        logger.warning(f"[RISK] SCALP bloqueado em {symbol}: {reason}")
-                        blocked_count += 1
-                        # Converte para HOLD
-                        filtered_decisions.append({
-                            'action': 'hold',
-                            'reason': f"Filtro SCALP: {reason}",
-                            'source': 'openai_scalp',
-                            'style': 'scalp'
-                        })
-                        continue
-                    
-                    can_trade, reason = self.filters.check_position_limit(symbol, open_positions)
-                    if not can_trade:
-                        logger.warning(f"[RISK] SCALP bloqueado em {symbol}: {reason}")
-                        blocked_count += 1
-                        filtered_decisions.append({
-                            'action': 'hold',
-                            'reason': f"Filtro SCALP: {reason}",
-                            'source': 'openai_scalp',
-                            'style': 'scalp'
-                        })
-                        continue
-                    
-                    # Filtro de TP/SL
-                    tp_pct = dec.get('take_profit_pct')
-                    sl_pct = dec.get('stop_loss_pct')
-                    
-                    if tp_pct and sl_pct:
-                        can_trade, reason = self.filters.check_fee_viability(
-                            abs(float(tp_pct)), 
-                            abs(float(sl_pct)), 
-                            symbol
-                        )
-                        if not can_trade:
-                            logger.warning(f"[RISK] SCALP bloqueado em {symbol}: {reason}")
-                            blocked_count += 1
-                            filtered_decisions.append({
-                                'action': 'hold',
-                                'reason': f"Filtro SCALP: {reason}",
-                                'source': 'openai_scalp',
-                                'style': 'scalp'
-                            })
-                            continue
-                    
-                    # Se passou pelos filtros, aprova
-                    trade_count += 1
-                    side = dec.get('side', '').upper()
-                    leverage = dec.get('leverage', 0)
-                    confidence = dec.get('confidence', 0)
-                    
-                    logger.info(
-                        f"📊 [AI] IA SCALP decidiu TRADE: provider=openai style=scalp "
-                        f"action=OPEN_{side} symbol={symbol} leverage={leverage}x "
-                        f"tp={tp_pct}% sl={sl_pct}% confidence={confidence:.2f}"
+                # Busca candles do símbolo para filtro de volatilidade
+                candles = []
+                for ctx in market_contexts:
+                    if ctx.get('symbol') == symbol:
+                        # Precisamos dos candles originais, não só do contexto
+                        # Vamos assumir que o bot passa candles no contexto ou pular esse filtro
+                        # Por ora, vamos aplicar os outros filtros
+                        break
+                
+                # Aplica filtros (sem candles por enquanto, será passado pelo bot)
+                # Por ora, aplica apenas filtros que não dependem de candles
+                can_trade, reason = self.filters.check_cooldown(symbol)
+                if not can_trade:
+                    logger.warning(f"[RISK] SCALP bloqueado em {symbol}: {reason}")
+                    blocked_count += 1
+                    # Converte para HOLD
+                    filtered_decisions.append({
+                        'action': 'hold',
+                        'reason': f"Filtro SCALP: {reason}",
+                        'source': 'openai_scalp',
+                        'style': 'scalp'
+                    })
+                    continue
+                
+                can_trade, reason = self.filters.check_position_limit(symbol, open_positions)
+                if not can_trade:
+                    logger.warning(f"[RISK] SCALP bloqueado em {symbol}: {reason}")
+                    blocked_count += 1
+                    filtered_decisions.append({
+                        'action': 'hold',
+                        'reason': f"Filtro SCALP: {reason}",
+                        'source': 'openai_scalp',
+                        'style': 'scalp'
+                    })
+                    continue
+                
+                # Filtro de TP/SL
+                tp_pct = dec.get('take_profit_pct')
+                sl_pct = dec.get('stop_loss_pct')
+                
+                if tp_pct and sl_pct:
+                    can_trade, reason = self.filters.check_fee_viability(
+                        abs(float(tp_pct)), 
+                        abs(float(sl_pct)), 
+                        symbol
                     )
-                    filtered_decisions.append(dec)
-            
-            # Log resumo
-            if trade_count == 0 and hold_count == 0 and blocked_count == 0:
-                logger.info("ℹ️  [AI] IA SCALP não retornou decisões válidas")
-            else:
+                    if not can_trade:
+                        logger.warning(f"[RISK] SCALP bloqueado em {symbol}: {reason}")
+                        blocked_count += 1
+                        filtered_decisions.append({
+                            'action': 'hold',
+                            'reason': f"Filtro SCALP: {reason}",
+                            'source': 'openai_scalp',
+                            'style': 'scalp'
+                        })
+                        continue
+                
+                # Se passou pelos filtros, aprova
+                trade_count += 1
+                side = dec.get('side', '').upper()
+                leverage = dec.get('leverage', 0)
+                confidence = dec.get('confidence', 0)
+                
                 logger.info(
-                    f"✅ [AI] IA SCALP: {trade_count} trade(s) aprovado(s), "
-                    f"{hold_count} hold(s), {blocked_count} bloqueado(s) por filtros"
+                    f"📊 [AI] IA SCALP decidiu TRADE: provider=openai style=scalp "
+                    f"action=OPEN_{side} symbol={symbol} leverage={leverage}x "
+                    f"tp={tp_pct}% sl={sl_pct}% confidence={confidence:.2f}"
                 )
-            
-            return filtered_decisions
-            
-        except Exception as e:
-            logger.error(f"❌ [AI] Erro ao consultar IA SCALP (OpenAI): {e}", exc_info=True)
-            return []
+                filtered_decisions.append(dec)
+        
+        # Log resumo
+        if trade_count == 0 and hold_count == 0 and blocked_count == 0:
+            logger.info("ℹ️  [AI] IA SCALP não retornou decisões válidas")
+        else:
+            logger.info(
+                f"✅ [AI] IA SCALP: {trade_count} trade(s) aprovado(s), "
+                f"{hold_count} hold(s), {blocked_count} bloqueado(s) por filtros"
+            )
+        
+        return filtered_decisions
 
     def _build_scalp_prompt(self,
                             market_contexts: List[Dict[str, Any]],
