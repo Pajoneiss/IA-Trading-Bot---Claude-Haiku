@@ -1005,8 +1005,13 @@ class HyperliquidBot:
                 )
                 
                 # 2. Para cada candidato, decide se chama IA
-                for symbol in scalp_candidates:
+                for idx, symbol in enumerate(scalp_candidates):
                     if self.ai_manager.should_call_scalp(symbol, market_snapshot):
+                        # Delay de 3s entre símbolos (exceto o primeiro)
+                        if idx > 0:
+                            self.logger.debug("[AI MANAGER] Aguardando 3s entre análises...")
+                            time.sleep(3)
+                        
                         self.logger.info(f"⚡ [AI MANAGER] Analisando SCALP para {symbol}...")
                         
                         # Filtra contexto apenas para este símbolo

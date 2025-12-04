@@ -245,6 +245,50 @@ class TelegramInteractivePRO:
                 logger.error(f"[TELEGRAM] Erro no comando /risco: {e}")
                 self.bot.send_message(message.chat.id, f"❌ Erro ao exibir risco: {e}")
         
+        # === PHASE 7: COMANDOS DE JOURNAL & COACH ===
+        @self.bot.message_handler(commands=['journal'])
+        def handle_journal_command(message):
+            try:
+                self._send_journal(message.chat.id)
+            except Exception as e:
+                logger.error(f"[TELEGRAM] Erro no comando /journal: {e}")
+        
+        @self.bot.message_handler(commands=['performance'])
+        def handle_performance_command(message):
+            try:
+                self._send_performance(message.chat.id)
+            except Exception as e:
+                logger.error(f"[TELEGRAM] Erro no comando /performance: {e}")
+        
+        @self.bot.message_handler(commands=['semana'])
+        def handle_semana_command(message):
+            try:
+                self._send_weekly_summary(message.chat.id)
+            except Exception as e:
+                logger.error(f"[TELEGRAM] Erro no comando /semana: {e}")
+        
+        @self.bot.message_handler(commands=['coach'])
+        def handle_coach_command(message):
+            try:
+                self._send_coach_insights(message.chat.id)
+            except Exception as e:
+                logger.error(f"[TELEGRAM] Erro no comando /coach: {e}")
+        
+        # === PHASE 8: COMANDOS DE PAPER TRADING ===
+        @self.bot.message_handler(commands=['execution', 'exec'])
+        def handle_execution_command(message):
+            try:
+                self._send_execution_menu(message.chat.id)
+            except Exception as e:
+                logger.error(f"[TELEGRAM] Erro no comando /execution: {e}")
+        
+        @self.bot.message_handler(commands=['paper_vs_real', 'compare'])
+        def handle_compare_command(message):
+            try:
+                self._send_real_vs_paper(message.chat.id)
+            except Exception as e:
+                logger.error(f"[TELEGRAM] Erro no comando /paper_vs_real: {e}")
+        
         # Callback handler (para confirmações)
         @self.bot.callback_query_handler(func=lambda call: True)
         def callback_query(call):
@@ -272,6 +316,14 @@ class TelegramInteractivePRO:
                     self._execute_reset_weekly(call.message.chat.id)
                 elif call.data.startswith("risk_cancel"):
                     self.bot.send_message(call.message.chat.id, "❌ Operação cancelada", parse_mode=None)
+                
+                # Phase 8: Callbacks de execution mode
+                elif call.data == "exec_mode_live":
+                    self._set_execution_mode(call.message.chat.id, "LIVE")
+                elif call.data == "exec_mode_paper":
+                    self._set_execution_mode(call.message.chat.id, "PAPER_ONLY")
+                elif call.data == "exec_mode_shadow":
+                    self._set_execution_mode(call.message.chat.id, "SHADOW")
                     
                 self.bot.answer_callback_query(call.id)
             except Exception as e:
@@ -1620,6 +1672,259 @@ class TelegramInteractivePRO:
                 
         except Exception as e:
             logger.error(f"[TELEGRAM] Erro ao resetar weekly: {e}")
+            self.bot.send_message(chat_id, f"❌ Erro: {str(e)[:100]}", parse_mode=None)
+    
+    # ========== PHASE 7: JOURNAL & COACH ==========
+    
+    def _send_journal(self, chat_id: int):
+        """Envia últimos trades do journal"""
+        try:
+            journal = getattr(self.main_bot, 'trade_journal', None)
+            if not journal:
+                self.bot.send_message(chat_id, "⚠️ Journal não disponível", parse_mode=None)
+                return
+            
+            trades = journal.get_recent_trades(limit=5)
+            
+            if not trades:
+                self.bot.send_message(chat_id, "📒 Journal vazio. Nenhum trade registrado ainda.", parse_mode=None)
+                return
+            
+            msg = "📒 ÚLTIMOS TRADES\n"
+            msg += "=" * 30 + "\n\n"
+            
+            for i, t in enumerate(reversed(trades), 1):
+                symbol = t.get('symbol', '?')
+                side = t.get('side', '?')
+                style = t.get('style', '?')
+                pnl_pct = t.get('pnl_pct', 0)
+                strategy = t.get('strategy_tag', 'N/A')
+                
+                emoji = "✅" if pnl_pct > 0 else "❌"
+                msg += f"{i}. {symbol} {side} ({style}) {emoji} {pnl_pct:+.2f}%\n"
+                msg += f"   Estratégia: {strategy}\n"
+                
+                reason = t.get('reason_summary', '')
+                if reason and len(reason) < 80:
+                    msg += f"   Motivo: {reason}\n"
+                msg += "\n"
+            
+            self.bot.send_message(chat_id, msg, parse_mode=None)
+            
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro ao enviar journal: {e}")
+            self.bot.send_message(chat_id, f"❌ Erro: {str(e)[:100]}", parse_mode=None)
+    
+    def _send_performance(self, chat_id: int):
+        """Envia análise de performance"""
+        try:
+            perf_engine = getattr(self.main_bot, 'performance_engine', None)
+            if not perf_engine:
+                self.bot.send_message(chat_id, "⚠️ Performance Engine não disponível", parse_mode=None)
+                return
+            
+            best_worst = perf_engine.get_best_worst_pairs(limit=3)
+            
+            if not best_worst.get('best') and not best_worst.get('worst'):
+                self.bot.send_message(chat_id, "📊 Ainda não há dados suficientes", parse_mode=None)
+                return
+            
+            msg = "📊 PERFORMANCE ANALYSIS\n"
+            msg += "=" * 30 + "\n\n"
+            
+            # Top 3
+            if best_worst.get('best'):
+                msg += "🏆 TOP 3 PARES:\n"
+                for sym, stats in best_worst['best']:
+                    msg += f"  {sym}: WR {stats['win_rate']:.1f}% | Exp {stats['expectancy']:.2f}%\n"
+                msg += "\n"
+            
+            # Piores 3
+            if best_worst.get('worst'):
+                msg += "⚠️ PIORES 3 PARES:\n"
+                for sym, stats in best_worst['worst']:
+                    msg += f"  {sym}: WR {stats['win_rate']:.1f}% | Exp {stats['expectancy']:.2f}%\n"
+            
+            self.bot.send_message(chat_id, msg, parse_mode=None)
+            
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro ao enviar performance: {e}")
+            self.bot.send_message(chat_id, f"❌ Erro: {str(e)[:100]}", parse_mode=None)
+    
+    def _send_weekly_summary(self, chat_id: int):
+        """Envia resumo semanal"""
+        try:
+            perf_engine = getattr(self.main_bot, 'performance_engine', None)
+            if not perf_engine:
+                self.bot.send_message(chat_id, "⚠️ Performance Engine não disponível", parse_mode=None)
+                return
+            
+            summary = perf_engine.get_weekly_summary()
+            
+            if 'error' in summary:
+                self.bot.send_message(chat_id, f"🏆 {summary['error']}", parse_mode=None)
+                return
+            
+            msg = "🏆 RESUMO DA SEMANA\n"
+            msg += "=" * 30 + "\n\n"
+            msg += f"📊 Trades: {summary['trades']}\n"
+            msg += f"✅ Win Rate: {summary['win_rate']:.1f}%\n"
+            msg += f"💰 PnL Médio: {summary['avg_pnl']:.2f}%\n\n"
+            
+            if 'best_trade' in summary:
+                best = summary['best_trade']
+                msg += f"🏆 Melhor Trade:\n"
+                msg += f"   {best.get('symbol')} {best.get('side')} {best.get('pnl_pct', 0):+.2f}%\n\n"
+            
+            if 'worst_trade' in summary:
+                worst = summary['worst_trade']
+                msg += f"📉 Pior Trade:\n"
+                msg += f"   {worst.get('symbol')} {worst.get('side')} {worst.get('pnl_pct', 0):+.2f}%\n"
+            
+            self.bot.send_message(chat_id, msg, parse_mode=None)
+            
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro ao enviar semana: {e}")
+            self.bot.send_message(chat_id, f"❌ Erro: {str(e)[:100]}", parse_mode=None)
+    
+    def _send_coach_insights(self, chat_id: int):
+        """Envia insights do IA Coach"""
+        try:
+            coach = getattr(self.main_bot, 'ia_coach', None)
+            if not coach:
+                self.bot.send_message(chat_id, "⚠️ IA Coach não disponível", parse_mode=None)
+                return
+            
+            insights = coach.generate_insights()
+            
+            if not insights:
+                msg = "🧠 IA COACH\n\n"
+                msg += "Ainda não há trades suficientes para gerar insights.\n"
+                msg += "Continue operando e volte em breve!"
+                self.bot.send_message(chat_id, msg, parse_mode=None)
+                return
+            
+            self.bot.send_message(chat_id, insights, parse_mode=None)
+            
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro ao enviar coach: {e}")
+            self.bot.send_message(chat_id, f"❌ Erro: {str(e)[:100]}", parse_mode=None)
+    
+    # ========== PHASE 8: PAPER TRADING & SHADOW MODE ==========
+    
+    def _send_execution_menu(self, chat_id: int):
+        """Envia menu de execução"""
+        try:
+            exec_manager = getattr(self.main_bot, 'execution_manager', None)
+            if not exec_manager:
+                self.bot.send_message(chat_id, "⚠️ Execution Manager não disponível", parse_mode=None)
+                return
+            
+            status = exec_manager.get_status()
+            current_mode = status['mode']
+            
+            msg = "⚙️ MODO DE EXECUÇÃO\n"
+            msg += "=" * 30 + "\n\n"
+            msg += f"Estado atual: {current_mode}\n\n"
+            msg += "• LIVE — Envia ordens reais\n"
+            msg += "• PAPER_ONLY — Apenas simula\n"
+            msg += "• SHADOW — Live + experimentos paper\n\n"
+            msg += "Escolha:"
+            
+            from telebot import types
+            markup = types.InlineKeyboardMarkup(row_width=3)
+            
+            btn_live = types.InlineKeyboardButton(
+                text="🟢 LIVE" if current_mode == "LIVE" else "LIVE",
+                callback_data="exec_mode_live"
+            )
+            btn_paper = types.InlineKeyboardButton(
+                text="📝 PAPER" if current_mode == "PAPER_ONLY" else "PAPER",
+                callback_data="exec_mode_paper"
+            )
+            btn_shadow = types.InlineKeyboardButton(
+                text="👥 SHADOW" if current_mode == "SHADOW" else "SHADOW",
+                callback_data="exec_mode_shadow"
+            )
+            
+            markup.add(btn_live, btn_paper, btn_shadow)
+            
+            self.bot.send_message(chat_id, msg, reply_markup=markup, parse_mode=None)
+            
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro ao enviar execution menu: {e}")
+            self.bot.send_message(chat_id, f"❌ Erro: {str(e)[:100]}", parse_mode=None)
+    
+    def _set_execution_mode(self, chat_id: int, mode: str):
+        """Altera modo de execução"""
+        try:
+            exec_manager = getattr(self.main_bot, 'execution_manager', None)
+            if not exec_manager:
+                self.bot.send_message(chat_id, "⚠️ Execution Manager não disponível", parse_mode=None)
+                return
+            
+            from bot.phase8.execution_config import ExecutionMode
+            new_mode = ExecutionMode[mode]
+            
+            success = exec_manager.set_mode(new_mode, source="telegram")
+            
+            if success:
+                msg = f"✅ Modo alterado para {mode}\n\n"
+                if mode == "LIVE":
+                    msg += "Bot enviará ordens REAIS"
+                elif mode == "PAPER_ONLY":
+                    msg += "Bot NÃO enviará ordens reais. Apenas simulação."
+                else:
+                    msg += "Bot enviará ordens reais + experimentos paper"
+                
+                self.bot.send_message(chat_id, msg, parse_mode=None)
+            else:
+                self.bot.send_message(chat_id, "❌ Erro ao alterar modo", parse_mode=None)
+                
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro ao alterar execution mode: {e}")
+            self.bot.send_message(chat_id, f"❌ Erro: {str(e)[:100]}", parse_mode=None)
+    
+    def _send_real_vs_paper(self, chat_id: int):
+        """Envia comparação REAL vs PAPER"""
+        try:
+            perf_engine = getattr(self.main_bot, 'performance_engine', None)
+            if not perf_engine:
+                self.bot.send_message(chat_id, "⚠️ Performance Engine não disponível", parse_mode=None)
+                return
+            
+            summary = perf_engine.get_real_vs_paper_summary(days=30)
+            
+            if 'error' in summary:
+                self.bot.send_message(chat_id, f"📊 {summary['error']}", parse_mode=None)
+                return
+            
+            msg = "📊 REAL vs PAPER — 30 dias\n"
+            msg += "=" * 30 + "\n\n"
+            
+            real = summary.get('real')
+            paper = summary.get('paper')
+            
+            if real:
+                msg += "🟢 REAL:\n"
+                msg += f"  • Trades: {real['trades']}\n"
+                msg += f"  • Win Rate: {real['win_rate']:.1f}%\n"
+                msg += f"  • Expectancy: {real['expectancy']:+.2f}%\n\n"
+            else:
+                msg += "🟢 REAL: Sem trades\n\n"
+            
+            if paper:
+                msg += "📝 PAPER:\n"
+                msg += f"  • Trades: {paper['trades']}\n"
+                msg += f"  • Win Rate: {paper['win_rate']:.1f}%\n"
+                msg += f"  • Expectancy: {paper['expectancy']:+.2f}%\n"
+            else:
+                msg += "📝 PAPER: Sem trades"
+            
+            self.bot.send_message(chat_id, msg, parse_mode=None)
+            
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro ao enviar comparação: {e}")
             self.bot.send_message(chat_id, f"❌ Erro: {str(e)[:100]}", parse_mode=None)
     
     # ========== HELPERS ==========
