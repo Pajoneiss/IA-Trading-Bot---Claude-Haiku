@@ -562,6 +562,10 @@ class HyperliquidBot:
         self.logger.info("=" * 60)
         
         self.risk_manager.log_risk_limits()
+        
+        # Inicializa Cooldown Manager (Anti-Revenge Trading)
+        from bot.cooldown_manager import CooldownManager
+        self.cooldown_manager = CooldownManager()
     
     def _is_on_cooldown(self, symbol: str) -> bool:
         """Verifica se o ativo está em cooldown"""
