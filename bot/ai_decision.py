@@ -154,10 +154,14 @@ class AiDecisionEngine:
                         action['action'] = 'open'
                         action['side'] = 'short'
                         
+                    # Mapeia structural_stop_price para stop_loss_price se necessário
+                    if not action.get('stop_loss_price') and action.get('structural_stop_price'):
+                        action['stop_loss_price'] = action['structural_stop_price']
+
                     if not all([
                         action.get('symbol'),
                         action.get('side'),
-                        action.get('size_usd'),
+                        # action.get('size_usd'), # Removido: Prompt diz que é calculado pelo Risk Manager
                     ]):
                         logger.warning(f"Ação 'open' incompleta, ignorando: {action}")
                         continue
