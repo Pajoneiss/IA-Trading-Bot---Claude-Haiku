@@ -279,7 +279,7 @@ class OpenAiScalpEngine:
                             risk_limits: Dict[str, Any]) -> str:
         """Constrói prompt para IA SCALP (OpenAI) com persona Trader Scalper Agressivo/Inteligente"""
         
-        prompt = \"\"\"Você é o TRADER SCALPER CHEFE na Hyperliquid.
+        prompt = """Você é o TRADER SCALPER CHEFE na Hyperliquid.
 Sua missão: GERAR CAPITAL DE GIRO rápido com trades curtos (5m/15m).
 
 ═══════════════════════════════════════════════════════
@@ -353,7 +353,7 @@ Se não for operar: {"action": "hold", "reason": "..."}
 IMPORTANTE:
 - O Risk Manager calcula o tamanho da posição. Você foca na QUALIDADE da entrada e no STOP.
 - NUNCA abra sem stop loss definido.
-\"\"\"
+"""
         
         # Estado Da Conta
         prompt += f"\\n📊 CONTA:\\nEquity: ${account_info.get('equity', 0):.2f} | Risco/Trade Limite: {risk_limits.get('risk_per_trade_pct', 1.0)}%\\n"
@@ -395,7 +395,7 @@ IMPORTANTE:
         return prompt
 
     def _parse_ai_response(self, response_text: str) -> List[Dict[str, Any]]:
-        \"\"\"Parse da resposta JSON (suporta formato antigo e novo)\"\"\"
+        """Parse da resposta JSON (suporta formato antigo e novo)"""
         try:
             # Limpa markdown
             text = response_text.strip()
