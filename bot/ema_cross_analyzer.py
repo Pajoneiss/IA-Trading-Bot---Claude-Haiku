@@ -59,16 +59,29 @@ class EMACrossAnalyzer:
         import time
         self._time = time
 
-    def analyze_symbol(self, symbol: str) -> Optional[EMAContext]:
+    def analyze_symbol(self, symbol: str, prefetched_candles: Optional[Dict[str, List]] = None) -> Optional[EMAContext]:
         """
         Analisa o símbolo em todos os timeframes configurados e gera o contexto.
+        Args:
+            symbol: Símbolo a analisar
+            prefetched_candles: Dict opcional {timeframe: data} para economizar requests
         """
         states = {}
+        import time
         
         try:
             for tf in self.config["timeframes"]:
-                # Busca candles (agora com cache)
-                candles = self._fetch_candles(symbol, tf)
+                
+                # Intra-symbol throttling para suavizar burst
+                time.sleep(0.2)
+                
+                # Check pre-fetched first
+                if prefetched_candles and tf in prefetched_candles:
+                    candles = prefetched_candles[tf]
+                else:
+                    # Busca candles (agora com cache)
+                    candles = self._fetch_candles(symbol, tf)
+                
                 if not candles:
                     # Log menos verboso se for erro recorrente
                     # self.log.warning(f"[EMA] Sem candles para {symbol} {tf}")

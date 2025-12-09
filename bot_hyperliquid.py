@@ -876,8 +876,8 @@ class HyperliquidBot:
         
         for pair in self.trading_pairs:
             # Throttle para evitar 429 (burst control)
-            # Processa ~2 pares por segundo (limitando requests do EMA Analyzer também)
-            time.sleep(0.5)
+            # Aumentado para 1.0s para maior segurança
+            time.sleep(1.0)
             
             try:
                 price = all_prices.get(pair)
@@ -950,7 +950,9 @@ class HyperliquidBot:
                 }
                 
                 # [EMA CROSS] Análise de múltiplos timeframes (4h, 1h, 15m, 5m)
-                ema_ctx = self.ema_analyzer.analyze_symbol(pair)
+                # Otimização: Passamos o candle de 1h que já temos para economizar 1 request
+                prefetched = {"1h": candles} if candles else None
+                ema_ctx = self.ema_analyzer.analyze_symbol(pair, prefetched_candles=prefetched)
                 if ema_ctx:
                     context['ema_timing'] = {
                         "score": ema_ctx.alignment_score,
