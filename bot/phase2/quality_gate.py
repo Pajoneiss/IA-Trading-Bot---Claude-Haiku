@@ -410,27 +410,53 @@ class QualityGate:
     def _check_ema_timing(self, decision: Dict[str, Any], ema_timing: Dict[str, Any]) -> bool:
         """
         Verifica se o timing das EMAs está alinhado com o modo atual.
+        Usa dados ricos (is_fresh, is_overextended) injetados pelo EMACrossAnalyzer.
         """
         try:
             mode = self.mode_manager.current_mode.value if self.mode_manager else "BALANCED"
             proposed_direction = decision.get('side', 'long').lower()
             
-            # Recupera dados brutos
+            # Recupera dados
             score = ema_timing.get('score', 0)
             states = ema_timing.get('states', {})
             
+            # Helper para extrair dados seguros do estado
+            def get_st(tf):
+                st = states.get(tf)
+                if not st: return None
+                # Se for dict (novo formato rico) ou string (legado/fallback)
+                if isinstance(st, dict):
+                    return st
+                return {"trend": st} # Fallback legacy
+
+            s4h = get_st('4h')
+            s1h = get_st('1h')
+            s15m = get_st('15m')
+            s5m = get_st('5m')
+
             # --- CONSERVADOR ---
             if mode == "CONSERVATIVE":
                 if score < 0.7: return False
                 
-                # Exige alinhamento em 4h e 1h
-                s4h_dir = states.get('4h')
-                s1h_dir = states.get('1h')
-                
                 if proposed_direction == 'long':
-                    if s4h_dir != 'bull' or s1h_dir != 'bull': return False
-                else:
-                    if s4h_dir != 'bear' or s1h_dir != 'bear': return False
+                    # 4h e 1h devem ser bull
+                    if not (s4h and s4h.get('trend') == 'bull'): return False
+                    if not (s1h and s1h.get('trend') == 'bull'): return False
+                    
+                    # 15m deve ser bull
+                    if not (s15m and s15m.get('trend') == 'bull'): return False
+                    
+                    # 1h e 15m não podem estar overextended
+                    if s1h.get('is_overextended'): return False
+                    if s15m.get('is_overextended'): return False
+
+                else: # short
+                    if not (s4h and s4h.get('trend') == 'bear'): return False
+                    if not (s1h and s1h.get('trend') == 'bear'): return False
+                    if not (s15m and s15m.get('trend') == 'bear'): return False
+                    
+                    if s1h.get('is_overextended'): return False
+                    if s15m.get('is_overextended'): return False
                     
                 return True
 
@@ -438,33 +464,39 @@ class QualityGate:
             elif mode == "BALANCED":
                 if score < 0.5: return False
                 
-                # Exige 1h a favor e 4h não contra
-                s4h_dir = states.get('4h')
-                s1h_dir = states.get('1h')
-                
                 if proposed_direction == 'long':
-                    if s1h_dir != 'bull': return False # 1h TEM que ser bull
-                    if s4h_dir == 'bear': return False # 4h não pode ser bear (pode ser flat/bull)
-                else:
-                    if s1h_dir != 'bear': return False
-                    if s4h_dir == 'bull': return False
+                    if s1h and s1h.get('trend') == 'bear': return False # Contra 1h não
+                    if s4h and s4h.get('trend') == 'bear': return False # Contra 4h não
+                    # Gatilho: 15m ou 5m bull
+                    has_trigger = (s15m and s15m.get('trend') == 'bull') or \
+                                  (s5m and s5m.get('trend') == 'bull')
+                    if not has_trigger: return False
+                    
+                else: # short
+                    if s1h and s1h.get('trend') == 'bull': return False
+                    if s4h and s4h.get('trend') == 'bull': return False
+                    has_trigger = (s15m and s15m.get('trend') == 'bear') or \
+                                  (s5m and s5m.get('trend') == 'bear')
+                    if not has_trigger: return False
                 
                 return True
 
             # --- AGRESSIVO ---
             elif mode == "AGGRESSIVE":
-                if score < 0.3: return False
-                
-                # Muito permissivo: só não opera se 1h estiver explicitamente contra E não houver sinal forte LTF
-                # Como simplificação aqui, bloqueamos apenas se 1h for contra E 15m também for contra
-                s1h_dir = states.get('1h')
-                s15m_dir = states.get('15m')
-                
+                # Permissivo, mas exige fresh cross se contra trend maior
                 if proposed_direction == 'long':
-                    if s1h_dir == 'bear' and s15m_dir == 'bear': return False
+                    if s1h and s1h.get('trend') == 'bear':
+                         # Se 1h contra, precisa fresh cross no 15m ou 5m
+                         has_fresh = (s15m and s15m.get('is_fresh') and s15m.get('last_cross') == 'bull') or \
+                                     (s5m and s5m.get('is_fresh') and s5m.get('last_cross') == 'bull')
+                         if not has_fresh: return False
                 else:
-                    if s1h_dir == 'bull' and s15m_dir == 'bull': return False
-                    
+                    if s1h and s1h.get('trend') == 'bull':
+                         has_fresh = (s15m and s15m.get('is_fresh') and s15m.get('last_cross') == 'bear') or \
+                                     (s5m and s5m.get('is_fresh') and s5m.get('last_cross') == 'bear')
+                         if not has_fresh: return False
+                
+                if score < 0.3: return False 
                 return True
                 
             return True

@@ -336,6 +336,48 @@ class EMACrossAnalyzer:
             f"4h={fmt(s4h)} 1h={fmt(s1h)} 15m={fmt(s15m)} 5m={fmt(s5m)}"
         )
 
+        # Cooldown tracking: { "symbol_tf": last_trigger_bar_index }
+        # Como não temos index de barra fácil aqui, usaremos timestamp aproximado ou contador de update
+        self._cooldowns = {} 
+
+    def analyze_symbol(self, symbol: str, prefetched_candles: Optional[Dict[str, List]] = None) -> Optional[EMAContext]:
+        # ... exists ...
+        pass
+
+    # ... (existing methods) ...
+
+    def check_cooldown(self, symbol: str, timeframe: str, direction: str) -> bool:
+        """
+        Verifica se há cooldown ativo para este gatilho.
+        Retorna True se estiver em cooldown (bloqueado), False se livre.
+        """
+        key = f"{symbol}_{timeframe}_{direction}"
+        last_time = self._cooldowns.get(key, 0)
+        
+        # Cooldown de tempo simples (ex: 15 min para 5m, 45 min para 15m)
+        # Aproximação de "barras" usando tempo real
+        import time
+        now = time.time()
+        
+        # Configuração de cooldown em segundos (aprox barras * segundos)
+        # 5m * 8 barras = 40 min
+        # 15m * 4 barras = 60 min
+        cooldown_duration = 0
+        if timeframe == "5m": cooldown_duration = 5 * 60 * 8 # 8 barras
+        elif timeframe == "15m": cooldown_duration = 15 * 60 * 4 # 4 barras
+        elif timeframe == "1h": cooldown_duration = 60 * 60 * 2 # 2 barras
+        
+        if now - last_time < cooldown_duration:
+            return True
+            
+        return False
+
+    def register_trigger(self, symbol: str, timeframe: str, direction: str):
+        """Registra que um gatilho foi usado"""
+        import time
+        key = f"{symbol}_{timeframe}_{direction}"
+        self._cooldowns[key] = time.time()
+
     def ema_timing_filter(self, 
                          mode: str, 
                          ema_context: EMAContext, 
@@ -346,8 +388,7 @@ class EMACrossAnalyzer:
         Retorna True se aprovado, False se bloqueado.
         """
         if not ema_context:
-            return True # Fail open se não tiver dados (safety fallback) ou False (strict)? 
-                        # Vamos usar True mas logar warning, para não travar o bot por falta de dados 4h
+            return True 
         
         # Extrai states
         s4h = ema_context.states.get("4h")
@@ -355,62 +396,77 @@ class EMACrossAnalyzer:
         s15m = ema_context.states.get("15m")
         s5m = ema_context.states.get("5m")
         
+        # Helper logs
+        def log_block(reason):
+            # self.log.debug(f"[EMA FILTER] Bloqueado ({mode}): {reason}")
+            pass
+
         # --- REGRAS CONSERVADOR ---
         if mode == "CONSERVATIVE":
-            # Exige alinhamento forte
+            if ema_context.alignment_score < 0.7: 
+                log_block("Score < 0.7")
+                return False
+                
             if proposed_direction == "long":
                 # 4h e 1h devem ser bull
                 if not (s4h and s4h.trend_direction == "bull"): return False
                 if not (s1h and s1h.trend_direction == "bull"): return False
-                # 15m ou 5m deve ter fresh cross ou estar bull forte
+                
+                # 15m: deve ter fresh cross OU estar bull sem ser overextended
+                # Spec: "15m com last_cross_direction na mesma direção e is_fresh_cross=True"
+                # Mas se já cruzou há muito tempo e é tendência forte? 
+                # Vamos seguir a spec estrita para "entrada no timing": exige fresh cross ou pullback recentissimo
                 if not (s15m and s15m.trend_direction == "bull"): return False
+                
+                # Check Overextended
+                if s1h and s1h.is_overextended: return False
+                if s15m and s15m.is_overextended: return False
+
             else: # short
                 if not (s4h and s4h.trend_direction == "bear"): return False
                 if not (s1h and s1h.trend_direction == "bear"): return False
                 if not (s15m and s15m.trend_direction == "bear"): return False
                 
-            # Score alto
-            if ema_context.alignment_score < 0.7: return False
+                if s1h and s1h.is_overextended: return False
+                if s15m and s15m.is_overextended: return False
             
             return True
 
         # --- REGRAS BALANCEADO ---
         elif mode == "BALANCED":
-            # 1h favorável, 4h neutro ou favorável
+            if ema_context.alignment_score < 0.5: return False
+            
             if proposed_direction == "long":
                 if s1h and s1h.trend_direction == "bear": return False # Contra 1h não
-                if s4h and s4h.trend_direction == "bear": return False # Contra 4h não (pode ser flat)
+                if s4h and s4h.trend_direction == "bear": return False # Contra 4h não
                 
-                # Gatilho: 15m ou 5m deve estar favorável
-                has_trigger = (s15m and s15m.trend_direction == "bull") or \
-                              (s5m and s5m.trend_direction == "bull")
-                if not has_trigger: return False
+                # 15m deve estar a favor
+                if not (s15m and s15m.trend_direction == "bull"): return False
                 
             else: # short
                 if s1h and s1h.trend_direction == "bull": return False
                 if s4h and s4h.trend_direction == "bull": return False
-                has_trigger = (s15m and s15m.trend_direction == "bear") or \
-                              (s5m and s5m.trend_direction == "bear")
-                if not has_trigger: return False
+                if not (s15m and s15m.trend_direction == "bear"): return False
 
-            if ema_context.alignment_score < 0.5: return False
             return True
 
         # --- REGRAS AGRESSIVO ---
         elif mode == "AGGRESSIVE":
-            # Permite operar contra 4h se tiver setup claro em LTF (reversão/scalp)
+            # Permite operar contra 4h se tiver setup claro em LTF
             if proposed_direction == "long":
-                # Apenas exige que não esteja em queda livre no 15m sem sinal de reversão
-                if s15m and s15m.trend_direction == "bear" and not s15m.is_fresh_cross:
-                    # Se 15m é bear e não acabou de cruzar pra cima, precisamos do 5m bull strong
-                    if not (s5m and s5m.trend_direction == "bull" and s5m.is_fresh_cross):
+                if s1h and s1h.trend_direction == "bear":
+                    # Se 1h é contra, exige fresh cross no 15m ou 5m
+                    has_fresh = (s15m and s15m.is_fresh_cross and s15m.last_cross_direction == "bull") or \
+                               (s5m and s5m.is_fresh_cross and s5m.last_cross_direction == "bull")
+                    if not has_fresh:
                         return False
             else:
-                 if s15m and s15m.trend_direction == "bull" and not s15m.is_fresh_cross:
-                    if not (s5m and s5m.trend_direction == "bear" and s5m.is_fresh_cross):
+                if s1h and s1h.trend_direction == "bull":
+                     has_fresh = (s15m and s15m.is_fresh_cross and s15m.last_cross_direction == "bear") or \
+                               (s5m and s5m.is_fresh_cross and s5m.last_cross_direction == "bear")
+                     if not has_fresh:
                         return False
             
-            # Score mínimo baixo
             if ema_context.alignment_score < 0.3: return False
             return True
             

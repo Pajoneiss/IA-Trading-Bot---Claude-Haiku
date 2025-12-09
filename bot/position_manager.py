@@ -16,7 +16,8 @@ class Position:
                  take_profit_pct: Optional[float] = None, # PATCH: TP Opcional
                  strategy: str = 'swing',
                  initial_stop_price: Optional[float] = None,
-                 management_profile: str = "SCALP_CAN_PROMOTE"):
+                 management_profile: str = "SCALP_CAN_PROMOTE",
+                 extra_metadata: Optional[Dict[str, Any]] = None):
         self.symbol = symbol
         self.side = side  # 'long' ou 'short'
         self.entry_price = entry_price
@@ -27,6 +28,7 @@ class Position:
         self.take_profit_price: Optional[float] = None # Inicializa explicitamente
         self.strategy = strategy # 'scalp' ou 'swing'
         self.opened_at = datetime.now(timezone.utc)
+        self.extra_metadata = extra_metadata or {}
         
         # Novos campos Position Manager 2.0
         self.trade_state = TradeState.INIT
@@ -125,7 +127,8 @@ class Position:
             'opened_at': self.opened_at.isoformat(),
             'trade_state': self.trade_state.value,
             'management_profile': self.management_profile.value,
-            'initial_stop_price_fixed': self.initial_stop_price_fixed
+            'initial_stop_price_fixed': self.initial_stop_price_fixed,
+            'extra_metadata': self.extra_metadata
         }
 
 
@@ -165,7 +168,8 @@ class PositionManager:
                      take_profit_pct: Optional[float] = None,
                      strategy: str = 'swing',
                      initial_stop_price: Optional[float] = None,
-                     management_profile: str = "SCALP_CAN_PROMOTE"):
+                     management_profile: str = "SCALP_CAN_PROMOTE",
+                     extra_metadata: Optional[Dict[str, Any]] = None):
         """
         Adiciona nova posição ao gerenciamento
         """
@@ -187,7 +191,8 @@ class PositionManager:
             take_profit_pct=take_profit_pct,
             strategy=strategy,
             initial_stop_price=initial_stop_price,
-            management_profile=management_profile
+            management_profile=management_profile,
+            extra_metadata=extra_metadata
         )
         
         self.positions[symbol] = position
@@ -201,6 +206,9 @@ class PositionManager:
             f"SL=${position.stop_loss_price:.2f} | {tp_info} | "
             f"Risco Ini: {abs(entry_price - position.stop_loss_price):.4f}"
         )
+        
+        if extra_metadata:
+            logger.info(f"[JOURNAL] Metadata: {json.dumps(extra_metadata)}")
     
     def update_position(self, symbol: str, new_size: float, new_entry_price: float):
         """

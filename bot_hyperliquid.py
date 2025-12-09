@@ -954,10 +954,21 @@ class HyperliquidBot:
                 prefetched = {"1h": candles} if candles else None
                 ema_ctx = self.ema_analyzer.analyze_symbol(pair, prefetched_candles=prefetched)
                 if ema_ctx:
+                    # Serializa contexto completo para QualityGate usar
+                    states_dict = {}
+                    for tf, st in ema_ctx.states.items():
+                        states_dict[tf] = {
+                            "trend": st.trend_direction,
+                            "last_cross": st.last_cross_direction,
+                            "bars_since": st.bars_since_last_cross,
+                            "is_fresh": st.is_fresh_cross,
+                            "is_overextended": st.is_overextended
+                        }
+                        
                     context['ema_timing'] = {
                         "score": ema_ctx.alignment_score,
                         "best": ema_ctx.best_direction,
-                        "states": {tf: str(st.trend_direction) for tf, st in ema_ctx.states.items()}
+                        "states": states_dict
                     }
                     self.last_ema_contexts[pair] = ema_ctx
                 # ================================================
@@ -1631,6 +1642,32 @@ class HyperliquidBot:
             # Verifica sucesso
             if result.get('status') == 'ok':
                 self.logger.info(f"✅ Posição ISOLATED adicionada: {symbol} {side.upper()}")
+                
+                # [EMA CROSS] Cooldown Registration & Journaling
+                ema_ctx = self.last_ema_contexts.get(symbol)
+                ema_metadata = {}
+                
+                if ema_ctx:
+                    # Registra gatilho para evitar re-entradas imediatas no mesmo timeframe
+                    # Registra para os timeframes que estão 'fresh' ou alinhados como gatilho
+                    # (Simplificação: registra para 15m e 5m se estiverem a favor)
+                    states = ema_ctx.states
+                    if states.get('15m') and states['15m'].trend_direction == 'bull' and side == 'long':
+                        self.ema_analyzer.register_trigger(symbol, '15m', 'bull')
+                    if states.get('5m') and states['5m'].trend_direction == 'bull' and side == 'long':
+                        self.ema_analyzer.register_trigger(symbol, '5m', 'bull')
+                    if states.get('15m') and states['15m'].trend_direction == 'bear' and side == 'short':
+                        self.ema_analyzer.register_trigger(symbol, '15m', 'bear')
+                    if states.get('5m') and states['5m'].trend_direction == 'bear' and side == 'short':
+                        self.ema_analyzer.register_trigger(symbol, '5m', 'bear')
+                        
+                    # Prepara metadata para o Journal
+                    ema_metadata = {
+                        "used_ema_timing": True,
+                        "ema_score": ema_ctx.alignment_score,
+                        "ema_best": ema_ctx.best_direction
+                    }
+                
                 self.position_manager.add_position(
                     symbol=symbol,
                     side=side,
@@ -1639,7 +1676,8 @@ class HyperliquidBot:
                     leverage=leverage,
                     stop_loss_pct=stop_loss_pct,
                     take_profit_pct=take_profit_pct,
-                    strategy=strategy
+                    strategy=strategy,
+                    extra_metadata=ema_metadata # Passa metadata extra
                 )
                 
                 # 📱 Notifica via Telegram com informações completas
