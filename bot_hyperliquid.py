@@ -1495,8 +1495,10 @@ class HyperliquidBot:
             else:
                 take_profit_pct = ((current_price - take_profit_price) / current_price) * 100
         
-        if take_profit_pct is None:
-            take_profit_pct = 6.0  # Default
+        # PATCH: Remover default de 6%
+        # Se IA não mandou TP, não inventamos. Position Manager 2.0 assume.
+        # if take_profit_pct is None:
+        #     take_profit_pct = 6.0
         
         self.logger.info(f"💰 Size calculado: {size:.6f} {symbol}")
         

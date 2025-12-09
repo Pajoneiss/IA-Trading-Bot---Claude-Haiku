@@ -12,7 +12,8 @@ class Position:
     """Representa uma posição aberta"""
     
     def __init__(self, symbol: str, side: str, entry_price: float, size: float,
-                 leverage: int, stop_loss_pct: float, take_profit_pct: float,
+                 leverage: int, stop_loss_pct: float, 
+                 take_profit_pct: Optional[float] = None, # PATCH: TP Opcional
                  strategy: str = 'swing',
                  initial_stop_price: Optional[float] = None,
                  management_profile: str = "SCALP_CAN_PROMOTE"):
@@ -23,6 +24,7 @@ class Position:
         self.leverage = leverage
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
+        self.take_profit_price: Optional[float] = None # Inicializa explicitamente
         self.strategy = strategy # 'scalp' ou 'swing'
         self.opened_at = datetime.now(timezone.utc)
         
@@ -38,10 +40,12 @@ class Position:
         # Calcula preços de SL e TP
         if side == 'long':
             self.stop_loss_price = entry_price * (1 - stop_loss_pct / 100)
-            self.take_profit_price = entry_price * (1 + take_profit_pct / 100)
+            if take_profit_pct is not None:
+                self.take_profit_price = entry_price * (1 + take_profit_pct / 100)
         else:  # short
             self.stop_loss_price = entry_price * (1 + stop_loss_pct / 100)
-            self.take_profit_price = entry_price * (1 - take_profit_pct / 100)
+            if take_profit_pct is not None:
+                self.take_profit_price = entry_price * (1 - take_profit_pct / 100)
 
         # Se stop inicial explícito for fornecido, usa ele (prioridade sobre pct)
         if initial_stop_price and initial_stop_price > 0:
@@ -77,13 +81,17 @@ class Position:
         if self.side == 'long':
             if current_price <= self.stop_loss_price:
                 return 'stop_loss'
-            # TP só é verificado se ainda não foi promovido a swing (runners não têm TP fixo obrigatório)
-            elif self.trade_state != TradeState.PROMOTED_TO_SWING and current_price >= self.take_profit_price:
+            # PATCH: Só verifica TP se ele existir
+            elif (self.take_profit_price is not None and 
+                  self.trade_state != TradeState.PROMOTED_TO_SWING and 
+                  current_price >= self.take_profit_price):
                 return 'take_profit'
         else:  # short
             if current_price >= self.stop_loss_price:
                 return 'stop_loss'
-            elif self.trade_state != TradeState.PROMOTED_TO_SWING and current_price <= self.take_profit_price:
+            elif (self.take_profit_price is not None and 
+                  self.trade_state != TradeState.PROMOTED_TO_SWING and 
+                  current_price <= self.take_profit_price):
                 return 'take_profit'
         
         return None
@@ -124,20 +132,21 @@ class Position:
 class PositionManager:
     """Gerencia posições abertas e stops virtuais"""
     
-    def __init__(self, default_stop_pct: float = 2.0, default_tp_pct: float = 4.0):
+    def __init__(self, default_stop_pct: float = 2.0, default_tp_pct: Optional[float] = None):
         """
         Inicializa Position Manager
         
         Args:
             default_stop_pct: Stop loss padrão em % (ex: 2.0 = -2%)
-            default_tp_pct: Take profit padrão em % (ex: 4.0 = +4%)
+            default_tp_pct: Take profit padrão em % (None = desativado por padrão)
         """
         self.default_stop_pct = default_stop_pct
         self.default_tp_pct = default_tp_pct
         self.positions: Dict[str, Position] = {}  # symbol -> Position
         self.management_config = self._load_management_config()
         
-        logger.info(f"PositionManager inicializado: SL={default_stop_pct}% | TP={default_tp_pct}%")
+        tp_log = f"{default_tp_pct}%" if default_tp_pct else "DYNAMIC (PM 2.0)"
+        logger.info(f"PositionManager inicializado: SL={default_stop_pct}% | TP={tp_log}")
 
     def _load_management_config(self) -> Dict[str, Any]:
         """Carrega configurações de gestão"""
@@ -162,8 +171,11 @@ class PositionManager:
         """
         if stop_loss_pct is None:
             stop_loss_pct = self.default_stop_pct
-        if take_profit_pct is None:
-            take_profit_pct = self.default_tp_pct
+            
+        # PATCH: NÃO forza default_tp_pct se ele for None.
+        # Permite TP None para gestão dinâmica
+        if take_profit_pct is None and self.default_tp_pct is not None:
+             take_profit_pct = self.default_tp_pct
         
         position = Position(
             symbol=symbol,
@@ -180,10 +192,14 @@ class PositionManager:
         
         self.positions[symbol] = position
         
+        # Log diferenciado se tem TP ou não
+        tp_info = f"TP=${position.take_profit_price:.2f}" if position.take_profit_price else "TP=DYNAMIC"
+        
         logger.info(
             f"Posição adicionada ({strategy.upper()}): {symbol} {side.upper()} | "
             f"entry=${entry_price:.2f} | size={size} | lev={leverage}x | "
-            f"SL=${position.stop_loss_price:.2f} | Risco Ini: {abs(entry_price - position.stop_loss_price):.4f}"
+            f"SL=${position.stop_loss_price:.2f} | {tp_info} | "
+            f"Risco Ini: {abs(entry_price - position.stop_loss_price):.4f}"
         )
     
     def update_position(self, symbol: str, new_size: float, new_entry_price: float):
@@ -203,10 +219,12 @@ class PositionManager:
         # Recalcula SL/TP baseados no novo preço médio
         if pos.side == 'long':
             pos.stop_loss_price = new_entry_price * (1 - pos.stop_loss_pct / 100)
-            pos.take_profit_price = new_entry_price * (1 + pos.take_profit_pct / 100)
+            if pos.take_profit_pct is not None:
+                pos.take_profit_price = new_entry_price * (1 + pos.take_profit_pct / 100)
         else:
             pos.stop_loss_price = new_entry_price * (1 + pos.stop_loss_pct / 100)
-            pos.take_profit_price = new_entry_price * (1 - pos.take_profit_pct / 100)
+            if pos.take_profit_pct is not None:
+                pos.take_profit_price = new_entry_price * (1 - pos.take_profit_pct / 100)
             
         logger.info(
             f"Posição atualizada: {symbol} | "
@@ -548,9 +566,64 @@ class PositionManager:
             
             pnl_pct = pos.get_unrealized_pnl_pct(current_price)
             
+            tp_str = f"${pos.take_profit_price:.2f}" if pos.take_profit_price else "DYNAMIC"
+            
             logger.info(
                 f"{symbol} {pos.side.upper()}: "
                 f"entry=${pos.entry_price:.2f} | current=${current_price:.2f} | "
-                f"PnL={pnl_pct:+.2f}% | SL=${pos.stop_loss_price:.2f} | TP=${pos.take_profit_price:.2f}"
+                f"PnL={pnl_pct:+.2f}% | SL=${pos.stop_loss_price:.2f} | TP={tp_str}"
             )
         logger.info("=" * 50)
+
+    def sync_with_exchange(self, exchange_positions: List[Dict[str, Any]]):
+        """
+        Sincroniza posições gerenciadas com posições reais da exchange
+        
+        Args:
+            exchange_positions: Lista de posições da exchange
+        """
+        exchange_symbols = set()
+        
+        for pos in exchange_positions:
+            symbol = pos.get('coin')
+            if not symbol:
+                continue
+            
+            exchange_symbols.add(symbol)
+            
+            # Se posição não está sendo gerenciada, adiciona (Trade Manual ou Restart)
+            if symbol not in self.positions:
+                size = abs(float(pos.get('size', 0)))
+                if size > 0:  # Ignora posições fechadas
+                    side = 'long' if float(pos.get('size', 0)) > 0 else 'short'
+                    entry_price = float(pos.get('entry_price', 0))
+                    leverage = int(pos.get('leverage', 1))
+                    
+                    # PATCH: Log mais explícito sobre gestão
+                    logger.info(
+                        f"📥 Detectada nova posição (MANUAL/RESTART) {symbol}: "
+                        f"Gerenciada pelo Position Manager 2.0 (Dynamic)."
+                    )
+                    
+                    # Tenta inferir stop se possível (ou usa padrão 2%)
+                    # TODO: Futuramente buscar ordens abertas para ver se tem SL real
+                    
+                    self.add_position(
+                        symbol=symbol,
+                        side=side,
+                        entry_price=entry_price,
+                        size=size,
+                        leverage=leverage,
+                        strategy='manual',
+                        management_profile="SCALP_CAN_PROMOTE", # Default para manual
+                        stop_loss_pct=self.default_stop_pct, # Fallback seguro
+                        take_profit_pct=None # IMPORTANTE: Sem TP fixo sintético!
+                    )
+        
+        # Remove posições gerenciadas que não existem mais na exchange
+        managed_symbols = set(self.positions.keys())
+        closed_symbols = managed_symbols - exchange_symbols
+        
+        for symbol in closed_symbols:
+            logger.info(f"Posição {symbol} não existe mais na exchange, removendo do gerenciamento")
+            self.remove_position(symbol)
