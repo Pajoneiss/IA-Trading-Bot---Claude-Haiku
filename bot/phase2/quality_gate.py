@@ -276,7 +276,25 @@ class QualityGate:
             if not profile_check['aligned']:
                 result.warnings.append(profile_check['reason'])
                 confidence *= profile_check.get('multiplier', 0.9)
+                
+        # === CRITÉRIO 7: EMA TIMING (Novo) ===
+        ema_timing = market_context.get('ema_timing') if market_context else None
         
+        # Se não tem no contexto direto, tenta no objeto self do bot se estivesse acessível (mas não está fácil).
+        # Assume que foi passado em market_context['ema_timing'] pelo loop principal
+        
+        if ema_timing:
+            if not self._check_ema_timing(decision, ema_timing):
+                # Se falhar no filtro EMA
+                mode_str = self.mode_manager.current_mode.value if self.mode_manager else "N/A"
+                result.approved = False
+                result.confidence_score = confidence
+                result.reasons.append(f"EMA Timing bloqueado para modo {mode_str} (score={ema_timing.get('score', 0):.2f})")
+                logger.warning(f"[QUALITY GATE] ❌ {symbol} rejeitado por EMA Timing ({mode_str})")
+                return result
+            else:
+                logger.info(f"[QUALITY GATE] ✅ {symbol} aprovado no EMA Timing")
+
         # === APROVADO ===
         result.approved = True
         result.confidence_score = confidence
@@ -389,6 +407,72 @@ class QualityGate:
             logger.error(f"[QUALITY GATE] Erro ao checar risk profile: {e}")
             return {'aligned': True, 'reason': 'Error, permitindo', 'multiplier': 1.0}
     
+    def _check_ema_timing(self, decision: Dict[str, Any], ema_timing: Dict[str, Any]) -> bool:
+        """
+        Verifica se o timing das EMAs está alinhado com o modo atual.
+        """
+        try:
+            mode = self.mode_manager.current_mode.value if self.mode_manager else "BALANCED"
+            proposed_direction = decision.get('side', 'long').lower()
+            
+            # Recupera dados brutos
+            score = ema_timing.get('score', 0)
+            states = ema_timing.get('states', {})
+            
+            # --- CONSERVADOR ---
+            if mode == "CONSERVATIVE":
+                if score < 0.7: return False
+                
+                # Exige alinhamento em 4h e 1h
+                s4h_dir = states.get('4h')
+                s1h_dir = states.get('1h')
+                
+                if proposed_direction == 'long':
+                    if s4h_dir != 'bull' or s1h_dir != 'bull': return False
+                else:
+                    if s4h_dir != 'bear' or s1h_dir != 'bear': return False
+                    
+                return True
+
+            # --- BALANCEADO ---
+            elif mode == "BALANCED":
+                if score < 0.5: return False
+                
+                # Exige 1h a favor e 4h não contra
+                s4h_dir = states.get('4h')
+                s1h_dir = states.get('1h')
+                
+                if proposed_direction == 'long':
+                    if s1h_dir != 'bull': return False # 1h TEM que ser bull
+                    if s4h_dir == 'bear': return False # 4h não pode ser bear (pode ser flat/bull)
+                else:
+                    if s1h_dir != 'bear': return False
+                    if s4h_dir == 'bull': return False
+                
+                return True
+
+            # --- AGRESSIVO ---
+            elif mode == "AGGRESSIVE":
+                if score < 0.3: return False
+                
+                # Muito permissivo: só não opera se 1h estiver explicitamente contra E não houver sinal forte LTF
+                # Como simplificação aqui, bloqueamos apenas se 1h for contra E 15m também for contra
+                s1h_dir = states.get('1h')
+                s15m_dir = states.get('15m')
+                
+                if proposed_direction == 'long':
+                    if s1h_dir == 'bear' and s15m_dir == 'bear': return False
+                else:
+                    if s1h_dir == 'bull' and s15m_dir == 'bull': return False
+                    
+                return True
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"[QUALITY GATE] Erro ao checar EMA timing: {e}")
+            return True # Fail open para não travar produção por erro de lógica nova
+
     def log_rejection(self, symbol: str, result: QualityGateResult):
         """Loga rejeição de forma clara"""
         logger.warning(f"[QUALITY GATE] 🚫 {symbol} REJEITADO:")

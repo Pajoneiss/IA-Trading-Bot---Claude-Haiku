@@ -566,6 +566,11 @@ class HyperliquidBot:
         # Inicializa Cooldown Manager (Anti-Revenge Trading)
         from bot.cooldown_manager import CooldownManager
         self.cooldown_manager = CooldownManager()
+        
+        # [EMA CROSS] Inicializa Analyzer
+        from bot.ema_cross_analyzer import EMACrossAnalyzer
+        self.ema_analyzer = EMACrossAnalyzer(self.client, logger_instance=self.logger)
+        self.last_ema_contexts = {} # Cache para Quality Gate usar depois
     
     def _is_on_cooldown(self, symbol: str) -> bool:
         """Verifica se o ativo está em cooldown"""
@@ -681,6 +686,22 @@ class HyperliquidBot:
                         candles=candles,
                         funding_rate=None
                     )
+                    
+                    # [EMA CROSS] Análise de múltiplos timeframes (4h, 1h, 15m, 5m)
+                    # Isso adiciona inteligência de timing ao contexto
+                    ema_ctx = self.ema_analyzer.analyze_symbol(pair)
+                    if ema_ctx:
+                        # Adiciona dados brutos ao contexto para uso no Quality Gate
+                        context['ema_timing'] = {
+                            "score": ema_ctx.alignment_score,
+                            "best": ema_ctx.best_direction,
+                            "states": {tf: str(st.trend_direction) for tf, st in ema_ctx.states.items()}
+                        }
+                        # Guarda objeto completo (não serializável) em cache temporário se precisar,
+                        # mas aqui vamos injetar no objeto de decisão depois ou usar direto no Quality Gate via self
+                        # Para facilitar, vamos passar o objeto para a `self.last_ema_contexts`
+                        self.last_ema_contexts[pair] = ema_ctx
+
                     market_contexts.append(context)
                 except Exception as e:
                     self.logger.error(f"[AI] FORCE_SCALP: erro ao construir contexto para {pair}: {e}")
@@ -878,6 +899,16 @@ class HyperliquidBot:
                     'ema': ema,
                     'liquidity': liquidity
                 }
+                
+                # [EMA CROSS] Análise de múltiplos timeframes (4h, 1h, 15m, 5m)
+                ema_ctx = self.ema_analyzer.analyze_symbol(pair)
+                if ema_ctx:
+                    context['ema_timing'] = {
+                        "score": ema_ctx.alignment_score,
+                        "best": ema_ctx.best_direction,
+                        "states": {tf: str(st.trend_direction) for tf, st in ema_ctx.states.items()}
+                    }
+                    self.last_ema_contexts[pair] = ema_ctx
                 # ================================================
                 
                 market_contexts.append(context)
