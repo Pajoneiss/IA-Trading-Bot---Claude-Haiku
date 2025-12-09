@@ -276,25 +276,39 @@ TAKE PROFIT:
         prompt += f"\n🔍 ANÁLISE DE MERCADO:\n"
         for ctx in market_contexts:
             symbol = ctx.get('symbol', 'UNKNOWN')
-            price = ctx.get('current_price', 0)
+            price = ctx.get('price', 0)  # Corrigido de 'current_price' para 'price'
             
             prompt += f"\n=== {symbol} (Preço: ${price:.4f}) ===\n"
             
-            # EMAs e RSI
-            ema9 = ctx.get('ema_9', 0)
-            ema21 = ctx.get('ema_21', 0)
-            rsi = ctx.get('rsi', 50)
+            # Indicadores estão em um dict aninhado
+            indicators = ctx.get('indicators', {})
+            ema9 = indicators.get('ema_9') or 0
+            ema21 = indicators.get('ema_21') or 0
+            rsi = indicators.get('rsi') or 50
+            volatility = indicators.get('volatility_pct') or 0
             
-            prompt += f"EMA9: ${ema9:.4f} | EMA21: ${ema21:.4f} | RSI: {rsi:.1f}\n"
+            prompt += f"EMA9: ${ema9:.4f} | EMA21: ${ema21:.4f} | RSI: {rsi:.1f} | Vol: {volatility:.2f}%\n"
             
-            # Regime
-            regime = ctx.get('regime', 'UNKNOWN')
-            prompt += f"Regime: {regime}\n"
+            # Trend está em dict aninhado
+            trend = ctx.get('trend', {})
+            direction = trend.get('direction', 'neutral')
+            strength = trend.get('strength', 0)
+            prompt += f"Tendência: {direction.upper()} (força: {strength:.2f})\n"
             
-            # Sinais técnicos se disponíveis
-            signals = ctx.get('signals', {})
-            if signals:
-                prompt += f"Sinais: {signals}\n"
+            # Variação 24h
+            change_24h = ctx.get('price_change_24h_pct', 0)
+            prompt += f"Variação 24h: {change_24h:+.2f}%\n"
+            
+            # Phase2 data se disponível
+            phase2 = ctx.get('phase2', {})
+            if phase2:
+                structure = phase2.get('structure')
+                patterns = phase2.get('patterns', [])
+                if structure:
+                    prompt += f"Estrutura: {structure.get('trend', 'N/A')} | Último Swing: {structure.get('last_swing', 'N/A')}\n"
+                if patterns:
+                    prompt += f"Padrões: {', '.join([p.get('name', '') for p in patterns[:3]])}\n"
+
         
         # Formato de resposta
         prompt += """
