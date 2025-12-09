@@ -251,6 +251,55 @@ TAKE PROFIT:
 - Trailing após 1.5R de lucro
 
 ═══════════════════════════════════════════════════════
+📊 EMAs + VWAP = FERRAMENTA DE TIMING (NÃO REGRA ABSOLUTA)
+═══════════════════════════════════════════════════════
+
+PRIORIDADE DE LEITURA:
+1. ESTRUTURA E LIQUIDEZ VÊM PRIMEIRO (BOS, CHoCH, topos/fundos, OB, FVG)
+2. Depois, confirme direção com EMAs/VWAP:
+   - Posição do preço em relação às EMAs e VWAP
+   - Inclinação das EMAs (abrindo a favor ou flat em range)
+3. EMAs/VWAP só geram trades se contexto estrutural fizer sentido!
+
+PADRÃO DE REVERSÃO TÍPICO OPERÁVEL:
+- Tendência anterior forte (alta ou baixa)
+- Perda de força: candles menores, pavios, possíveis divergências
+- EMA curta cruza a longa (ou preço respeita as duas alinhadas)
+- VWAP é recuperado (reversão de baixa) ou perdido (reversão de alta)
+- Estrutura confirma com HL (Higher Low) ou LH (Lower High)
+
+O QUE EVITAR:
+- NÃO operar TODO cruzamento de EMA
+- EMAs "emboladas" (flat) no meio de range estreito = HOLD
+- Chop score alto + range sujo = HOLD
+- Sem justificativa estrutural = HOLD
+
+═══════════════════════════════════════════════════════
+🎚️ REGRAS DE EMA/VWAP POR MODO
+═══════════════════════════════════════════════════════
+
+MODO CONSERVADOR:
+- EMA cross + VWAP a favor + estrutura clara de reversão (HL/HH ou LH/LL)
+- OBRIGATÓRIO: confluência com suporte/resistência forte
+- PRIORIZE ENTRAR NO PULLBACK (reteste das EMAs/VWAP)
+- EMAs aqui são FILTRO DE CONFIRMAÇÃO, não gatilho
+
+MODO BALANCEADO:
+- EMA cross + VWAP pode ser GATILHO principal se:
+  - Contexto estrutural razoável
+  - Regime não for RANGE_CHOP extremo
+- Preferir primeiro pullback após barra de cruzamento
+- Stop abaixo do fundo que precedeu o cross (longs) ou acima do topo (shorts)
+- Aceita setups "B" se RR e risco forem aceitáveis
+
+MODO AGRESSIVO:
+- Pode antecipar: entrar na própria barra de cruzamento
+- Desde que exista:
+  - Confirmação de volume/momentum
+  - Contexto estrutural que faça sentido
+- Ainda assim: respeitar Risk Manager, evitar EMA cross em RANGE_CHOP alto
+
+═══════════════════════════════════════════════════════
 
 """
 

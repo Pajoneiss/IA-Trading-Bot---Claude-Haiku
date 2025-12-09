@@ -316,6 +316,36 @@ Quando estiver em MODO SCALP:
 - Use muito bem estrutura de mercado no 15m/5m, zonas de liquidez e rejeições.
 
 ────────────────────────────────
+EMAs + VWAP PARA SCALP (TIMING)
+────────────────────────────────
+Use EMAs (9, 26) e VWAP em timeframes menores (5m, 15m) como ferramenta de TIMING:
+
+1. PULLBACK EM EMA + REJEIÇÃO EM VWAP = ÓTIMOS GATILHOS
+2. Se houver EMA cross recente + tendência forte no timeframe maior:
+   - Scalp pode operar a favor da nova tendência em recuos curtos
+
+REGRAS POR MODO:
+- CONSERVADOR: 
+  - EMA cross + VWAP apenas como FILTRO de confirmação
+  - Estrutura clara (HL/LH) obrigatória
+  - Entrar APENAS no pullback após confirmação
+  
+- BALANCEADO:
+  - EMA cross + VWAP pode ser gatilho se contexto estrutural ok
+  - Primeiro pullback após cross é entrada preferida
+  - Regime não pode ser RANGE_CHOP extremo
+
+- AGRESSIVO:
+  - Pode entrar na barra do cruzamento se volume/momentum confirmar
+  - Ainda respeitar Risk Manager
+  - Evitar EMA cross em chop_score alto
+
+O QUE EVITAR (SCALP):
+- EMAs flat/emboladas em range estreito = HOLD
+- Chop score alto = HOLD
+- Sem justificativa estrutural (suporte/resistência, liquidez) = HOLD
+
+────────────────────────────────
 FORMATO DA RESPOSTA (OBRIGATÓRIO)
 ────────────────────────────────
 Você SEMPRE deve responder com UM ÚNICO JSON VÁLIDO, SEM texto extra, SEM comentários, SEM markdown.
