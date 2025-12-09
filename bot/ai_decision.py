@@ -195,7 +195,142 @@ class AiDecisionEngine:
             logger.error(f"Erro inesperado ao processar resposta IA: {e}")
             return []
     
+    def _build_prompt(self,
+                      market_contexts: List[Dict[str, Any]],
+                      account_info: Dict[str, Any],
+                      open_positions: List[Dict[str, Any]],
+                      risk_limits: Dict[str, Any]) -> str:
+        """Constrói prompt para IA (Claude) com persona Trader Institucional"""
+        
+        prompt = """Você é o HEAD TRADER de um fundo quantitativo institucional.
+Especialidade: SWING TRADE usando SMC (Smart Money Concepts), Price Action Puro e Análise Multi-Timeframe.
+
+═══════════════════════════════════════════════════════
+🎯 METODOLOGIA DE ANÁLISE
+═══════════════════════════════════════════════════════
+
+MACRO (4H / 1H):
+- Identifique a TENDÊNCIA DOMINANTE e ESTRUTURA DE MERCADO
+- Detecte BOS (Break of Structure) e CHoCH (Change of Character)
+- Mapeie ZONAS DE LIQUIDEZ: onde stops estão acumulados
+- Identifique ORDER BLOCKS, FVG (Fair Value Gaps), BREAKER BLOCKS
+
+EXECUÇÃO (15m / 5m):
+- Timing preciso de entrada após confirmação macro
+- Aguarde PULLBACK ou RETESTE de zonas-chave
+- Confirme com REAÇÃO DO PREÇO (rejeição, engolfo, pin bar)
+
+═══════════════════════════════════════════════════════
+🧠 PADRÕES E CONFLUÊNCIAS (SETUP A+)
+═══════════════════════════════════════════════════════
+
+REVERSÃO (mínimo 3 confluências):
+- OCO / OCO Invertido em zona institucional
+- Topo/Fundo Duplo com divergência RSI
+- Falha de rompimento (fake breakout) + volume
+- Stop hunt em região óbvia + reversão imediata
+
+CONTINUAÇÃO (mínimo 2 confluências):
+- Pullback em EMA 21 com rejeição
+- Reteste de suporte/resistência rompido
+- Bandeira/Flâmula após movimento forte
+
+═══════════════════════════════════════════════════════
+⚔️ REGRAS DE ENTRADA E SAÍDA
+═══════════════════════════════════════════════════════
+
+ANTES DE ABRIR TRADE:
+- Confirme tendência macro (4H/1H)
+- Aguarde pullback/reteste
+- Verifique confluências
+- Stop em zona estrutural clara (swing high/low)
+
+TAKE PROFIT:
+- RR mínimo 2:1 para primeiro alvo
+- Parciais em zonas de liquidez
+- Trailing após 1.5R de lucro
+
+═══════════════════════════════════════════════════════
+
+"""
+
+        # Informações da conta
+        prompt += f"\n📊 ESTADO DA CONTA:\n"
+        prompt += f"- Equity: ${account_info.get('equity', 0):.2f}\n"
+        prompt += f"- Drawdown Hoje: {account_info.get('daily_drawdown', 0):.2f}%\n"
+        prompt += f"- Posições Abertas: {len(open_positions)}\n"
+        
+        # Limites de risco
+        prompt += f"\n⚠️ LIMITES DE RISCO:\n"
+        prompt += f"- Max Posições: {risk_limits.get('max_open_trades', 3)}\n"
+        prompt += f"- Max Leverage: {risk_limits.get('max_leverage', 20)}x\n"
+        prompt += f"- Risco por Trade: {risk_limits.get('risk_per_trade_pct', 1.0)}%\n"
+        
+        # Posições abertas
+        if open_positions:
+            prompt += f"\n📈 POSIÇÕES ABERTAS:\n"
+            for pos in open_positions:
+                prompt += f"- {pos.get('symbol')}: {pos.get('side')} ${pos.get('size', 0):.2f} | PnL: {pos.get('pnl_pct', 0):.2f}%\n"
+        
+        # Contexto de mercado
+        prompt += f"\n🔍 ANÁLISE DE MERCADO:\n"
+        for ctx in market_contexts:
+            symbol = ctx.get('symbol', 'UNKNOWN')
+            price = ctx.get('current_price', 0)
+            
+            prompt += f"\n=== {symbol} (Preço: ${price:.4f}) ===\n"
+            
+            # EMAs e RSI
+            ema9 = ctx.get('ema_9', 0)
+            ema21 = ctx.get('ema_21', 0)
+            rsi = ctx.get('rsi', 50)
+            
+            prompt += f"EMA9: ${ema9:.4f} | EMA21: ${ema21:.4f} | RSI: {rsi:.1f}\n"
+            
+            # Regime
+            regime = ctx.get('regime', 'UNKNOWN')
+            prompt += f"Regime: {regime}\n"
+            
+            # Sinais técnicos se disponíveis
+            signals = ctx.get('signals', {})
+            if signals:
+                prompt += f"Sinais: {signals}\n"
+        
+        # Formato de resposta
+        prompt += """
+
+═══════════════════════════════════════════════════════
+📝 FORMATO DE RESPOSTA (JSON OBRIGATÓRIO)
+═══════════════════════════════════════════════════════
+
+Responda APENAS com um JSON válido. NADA de texto antes ou depois.
+
+Se NÃO houver oportunidade clara:
+{"action": "hold", "reason": "Motivo claro e específico"}
+
+Se houver oportunidade de ABERTURA:
+{
+  "action": "open",
+  "symbol": "SÍMBOLO",
+  "side": "long" ou "short",
+  "size_usd": valor entre 20-100,
+  "leverage": entre 1-20,
+  "stop_loss_price": preço exato do stop,
+  "take_profit_price": preço exato do alvo,
+  "confidence": 0.0 a 1.0,
+  "reason": "Setup: padrão encontrado + confluências"
+}
+
+Se houver ação em posição aberta:
+{"action": "close", "symbol": "SÍMBOLO", "reason": "motivo"}
+{"action": "increase", "symbol": "SÍMBOLO", "size_usd": 20, "reason": "motivo"}
+{"action": "decrease", "symbol": "SÍMBOLO", "size_usd": 20, "reason": "motivo"}
+"""
+        
+        return prompt
+    
     def _decide_fallback(self,
+
                         market_contexts: List[Dict[str, Any]],
                         account_info: Dict[str, Any],
                         open_positions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
