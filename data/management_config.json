@@ -1,0 +1,95 @@
+{
+    "CONSERVADOR": {
+        "SCALP_ONLY": {
+            "description": "Scalp puro e defensivo. Realiza rápido.",
+            "be_rr": 0.8,
+            "first_trim_rr": 1.2,
+            "first_trim_pct": 0.5,
+            "second_trim_rr": 2.0,
+            "second_trim_pct": 0.5,
+            "promotion_rr_min": 999.0,
+            "trail_style": "EMA",
+            "trail_offset_factor": 0.2
+        },
+        "SCALP_CAN_PROMOTE": {
+            "description": "Scalp que pode virar swing se muito óbvio.",
+            "be_rr": 1.0,
+            "first_trim_rr": 1.5,
+            "first_trim_pct": 0.4,
+            "promotion_rr_min": 2.5,
+            "trail_style": "STRUCTURE",
+            "trail_offset_factor": 0.3
+        },
+        "SWING": {
+            "description": "Swing trade clássico conservador.",
+            "be_rr": 1.2,
+            "first_trim_rr": 2.0,
+            "first_trim_pct": 0.3,
+            "promotion_rr_min": 2.0,
+            "trail_style": "STRUCTURE",
+            "trail_offset_factor": 0.5
+        }
+    },
+    "BALANCEADO": {
+        "SCALP_ONLY": {
+            "description": "Scalp padrão.",
+            "be_rr": 1.0,
+            "first_trim_rr": 1.5,
+            "first_trim_pct": 0.4,
+            "second_trim_rr": 2.5,
+            "second_trim_pct": 0.4,
+            "promotion_rr_min": 5.0,
+            "trail_style": "EMA",
+            "trail_offset_factor": 0.3
+        },
+        "SCALP_CAN_PROMOTE": {
+            "description": "Padrão para scalps da IA.",
+            "be_rr": 1.0,
+            "first_trim_rr": 1.8,
+            "first_trim_pct": 0.4,
+            "promotion_rr_min": 2.2,
+            "trail_style": "STRUCTURE",
+            "trail_offset_factor": 0.4
+        },
+        "SWING": {
+            "description": "Swing padrão.",
+            "be_rr": 1.2,
+            "first_trim_rr": 2.0,
+            "first_trim_pct": 0.3,
+            "promotion_rr_min": 2.0,
+            "trail_style": "STRUCTURE",
+            "trail_offset_factor": 0.5
+        }
+    },
+    "AGRESSIVO": {
+        "SCALP_ONLY": {
+            "description": "Scalp agressivo, segura mais o balanço.",
+            "be_rr": 1.2,
+            "first_trim_rr": 1.5,
+            "first_trim_pct": 0.3,
+            "second_trim_rr": 3.0,
+            "second_trim_pct": 0.5,
+            "promotion_rr_min": 4.0,
+            "trail_style": "VWAP",
+            "trail_offset_factor": 0.4
+        },
+        "SCALP_CAN_PROMOTE": {
+            "description": "Oportunista. Tenta virar runner rápido.",
+            "be_rr": 1.0,
+            "first_trim_rr": 1.2,
+            "first_trim_pct": 0.4,
+            "promotion_rr_min": 1.8,
+            "trail_style": "STRUCTURE",
+            "trail_offset_factor": 0.4
+        },
+        "SWING": {
+            "description": "Swing buscando home runs.",
+            "be_rr": 1.0,
+            "first_trim_rr": 2.0,
+            "first_trim_pct": 0.25,
+            "promotion_rr_min": 1.5,
+            "trail_style": "STRUCTURE",
+            "trail_offset_factor": 0.5
+        }
+    }
+}

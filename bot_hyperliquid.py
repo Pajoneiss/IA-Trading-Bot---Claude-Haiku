@@ -29,6 +29,7 @@ from bot.telegram_interactive_pro import TelegramInteractivePRO as TelegramInter
 from bot.scalp_filters import ScalpFilters
 from bot.ai_manager import AIManager
 from bot.phase5.trading_modes import TradingModeManager, TradingMode
+from bot.cooldown_manager import CooldownManager
 
 
 # ==================== CONFIGURAÇÃO DE LOGGING ====================
@@ -888,48 +889,67 @@ class HyperliquidBot:
         self.logger.info("🎯 Verificando stops/TPs...")
         self.position_manager.log_positions_summary(all_prices)
         
-        # ========== PHASE 2: POSITION MANAGER PRO ==========
-        # Gestão avançada: breakeven, parciais, trailing
-        from bot.phase2 import PositionManagerPro
+        # ========== PHASE 2: POSITION MANAGER 2.0 (Dynamic) ==========
+        # Gestão viva: parciais, promoção a swing, trailing
         
-        # Instancia Position Manager Pro (singleton-like)
-        if not hasattr(self, 'position_manager_pro'):
-            self.position_manager_pro = PositionManagerPro(
-                position_manager=self.position_manager,
-                config={
-                    'breakeven_at_r': 1.0,
-                    'partial_at_r': 2.0,
-                    'partial_pct': 0.5,
-                    'trailing_at_r': 3.0,
-                    'trailing_distance_pct': 1.0
-                }
-            )
-        
-        # Analisa cada posição para gestão
-        management_decisions = []
+        # Identifica Modo Atual
+        current_mode = "BALANCEADO" # Default
+        if hasattr(self, 'mode_manager'):
+            current_mode = self.mode_manager.current_mode
+            
+        # Analisa cada posição
         for position_dict in self.position_manager.get_all_positions():
             symbol = position_dict['symbol']
-            current_price = all_prices.get(symbol)
             
+            # Obtém contexto específico deste par
+            symbol_context = next((ctx for ctx in market_contexts if ctx['symbol'] == symbol), {})
+            if not symbol_context:
+                continue
+                
+            current_price = all_prices.get(symbol)
             if not current_price:
                 continue
             
-            # Converte para float
             try:
                 current_price = float(current_price)
-            except:
-                continue
+                
+                # CHAMA O POSITION MANAGER
+                actions = self.position_manager.manage_position(
+                    symbol=symbol,
+                    current_price=current_price,
+                    current_mode=current_mode,
+                    market_context=symbol_context
+                )
+                
+                # Executa ações retornadas
+                for action in actions:
+                    act_type = action.get('action')
+                    reason = action.get('reason', 'dynamic_management')
+                    
+                    self.logger.info(f"⚡ [PM 2.0] Ação para {symbol}: {act_type} | {reason}")
+                    
+                    if act_type == 'partial_close':
+                        percent = action.get('percent', 0.0)
+                        if percent > 0:
+                            self._execute_partial_close(symbol, percent, reason)
+                            
+                    elif act_type == 'update_stop':
+                        new_price = action.get('price')
+                        self.telegram.notify_message(
+                            f"🛡️ <b>UPDATE STOP {symbol}</b>\n"
+                            f"Novo Stop: ${new_price:.4f}\n"
+                            f"Motivo: {reason}"
+                        )
+                        
+                    elif act_type == 'promote_to_swing':
+                         self.telegram.notify_message(
+                            f"🚀 <b>PROMOÇÃO SWING {symbol}</b>\n"
+                            f"Trade evoluiu para Swing Runner!\n"
+                            f"Trailing ativado por Estrutura/EMA."
+                        )
             
-            # Analisa e sugere gestão
-            manage_suggestion = self.position_manager_pro.analyze_position(
-                symbol=symbol,
-                current_price=current_price
-            )
-            
-            if manage_suggestion:
-                management_decisions.append(manage_suggestion)
-                self.logger.info(f"[PHASE2 PRO] 💎 Gestão sugerida para {symbol}: "
-                               f"{manage_suggestion['manage_decision']['reason']}")
+            except Exception as e:
+                self.logger.error(f"Erro no Position Manager para {symbol}: {e}", exc_info=True)
         
         # ================================================
         
@@ -1336,6 +1356,12 @@ class HyperliquidBot:
             self.logger.warning(f"[RISK] Sinal fraco descartado: {symbol} confidence={confidence:.2f} < 0.60")
             return False
         
+        # 0. Check Cooldown (Anti-Revenge Trading)
+        if self.cooldown_manager.is_in_cooldown(symbol):
+            remaining = self.cooldown_manager.get_cooldown_remaining(symbol)
+            self.logger.warning(f"[RISK] {symbol} em COOLDOWN pós-stop (restam {remaining/60:.1f}min). Trade bloqueado.")
+            return False
+
         # Verifica se já tem posição
         if self.position_manager.has_position(symbol):
             self.logger.warning(f"{symbol}: Já existe posição aberta, ignorando")
@@ -1661,11 +1687,12 @@ class HyperliquidBot:
         reason = action.get('reason', 'unknown')
         
         position = self.position_manager.get_position(symbol)
-        if not position:
+        if not symbol or not self.position_manager.has_position(symbol):
             self.logger.warning(f"{symbol}: Posição não encontrada no gerenciamento")
             return
-        
-        current_price = prices.get(symbol, action.get('current_price'))
+            
+        position = self.position_manager.get_position(symbol)
+        current_price = prices.get(symbol, position.entry_price) # Use position.entry_price as fallback
         
         # Converte current_price para float com segurança
         try:
@@ -1680,6 +1707,10 @@ class HyperliquidBot:
         self.logger.info(f"🔴 FECHANDO POSIÇÃO: {symbol}")
         self.logger.info(f"Motivo: {reason.upper()} | PnL: {pnl_pct:+.2f}%")
         self.logger.info(f"{'='*50}")
+        
+        # REGISTRA COOLDOWN SE FOR STOP LOSS
+        if reason == 'stop_loss' and pnl_pct < 0:
+            self.cooldown_manager.register_stop(symbol)
         
         # Modo DRY RUN
         if not self.live_trading:
