@@ -325,28 +325,49 @@ TAKE PROFIT:
 📝 FORMATO DE RESPOSTA (JSON OBRIGATÓRIO)
 ═══════════════════════════════════════════════════════
 
+Você é um TREND FOLLOWER ESTRUTURAL. Seu papel:
+1. Identificar tendências e entrar na direção delas
+2. Posicionar STOP em NÍVEL ESTRUTURAL (não % arbitrário)
+3. SEGURAR a posição enquanto estrutura estiver intacta
+4. SAIR quando houver reversão clara de estrutura (CHoCH/BOS contra)
+
 Responda APENAS com um JSON válido. NADA de texto antes ou depois.
 
 Se NÃO houver oportunidade clara:
 {"action": "hold", "reason": "Motivo claro e específico"}
 
-Se houver oportunidade de ABERTURA:
+Se houver oportunidade de ABERTURA (SWING):
 {
   "action": "open",
   "symbol": "SÍMBOLO",
   "side": "long" ou "short",
-  "size_usd": valor entre 20-100,
-  "leverage": entre 1-20,
-  "stop_loss_price": preço exato do stop,
-  "take_profit_price": preço exato do alvo,
+  "style": "swing",
+  "entry_price": preço sugerido de entrada,
+  "entry_zone": [preço_min, preço_max],
+  "structural_stop_price": preço do stop baseado em estrutura (swing high/low, OB, FVG),
+  "invalid_level": preço onde ideia de trade fica inválida,
+  "size_usd": valor entre 20-100 (calculado pelo risco),
+  "leverage": entre 3-15,
   "confidence": 0.0 a 1.0,
-  "reason": "Setup: padrão encontrado + confluências"
+  "management_plan": {
+    "style": "TREND_FOLLOW",
+    "min_rr_before_trim": 1.5,
+    "trail_logic": "SWING_HIGHS_LOWS" ou "EMA21" ou "ATR_TRAILING"
+  },
+  "regime_context": "descrição breve do regime",
+  "reason": "Setup: padrão + confluências + por que esse stop faz sentido"
 }
 
+IMPORTANTE SOBRE O STOP:
+- O stop DEVE estar em um nível estrutural claro (último swing high/low, order block, FVG)
+- NÃO use % arbitrário (ex: -2%)
+- Se não houver estrutura clara para o stop, prefira HOLD
+- A distância do stop define o tamanho da posição (risco fixo)
+
 Se houver ação em posição aberta:
-{"action": "close", "symbol": "SÍMBOLO", "reason": "motivo"}
-{"action": "increase", "symbol": "SÍMBOLO", "size_usd": 20, "reason": "motivo"}
-{"action": "decrease", "symbol": "SÍMBOLO", "size_usd": 20, "reason": "motivo"}
+{"action": "close", "symbol": "SÍMBOLO", "reason": "motivo - CHoCH/reversão estrutural"}
+{"action": "increase", "symbol": "SÍMBOLO", "size_usd": 20, "reason": "piramidação em pullback"}
+{"action": "decrease", "symbol": "SÍMBOLO", "size_usd": 20, "reason": "parcial em target/exaustão"}
 """
         
         return prompt

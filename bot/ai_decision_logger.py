@@ -34,6 +34,7 @@ class AIDecisionLogger:
                      raw_reason: Optional[str] = None,
                      rejection_reason: Optional[str] = None,
                      rejected_by: Optional[str] = None,  # "quality_gate", "risk_manager", "confidence", etc.
+                     mode: Optional[str] = None,  # "CONSERVADOR", "BALANCEADO", "AGRESSIVO"
                      extra_data: Optional[Dict[str, Any]] = None):
         """
         Loga uma decisão de IA para análise.
@@ -47,6 +48,7 @@ class AIDecisionLogger:
             raw_reason: Motivo textual dado pela IA
             rejection_reason: Se rejeitado, o motivo
             rejected_by: Componente que rejeitou (quality_gate, risk_manager, etc.)
+            mode: Modo de trading ativo (CONSERVADOR, BALANCEADO, AGRESSIVO)
             extra_data: Dados extras para diagnóstico
         """
         timestamp = datetime.now(timezone.utc).isoformat()
@@ -54,6 +56,7 @@ class AIDecisionLogger:
         entry = {
             "timestamp": timestamp,
             "type": decision_type,
+            "mode": mode,
             "symbol": symbol,
             "action": action,
             "direction": direction,
@@ -93,7 +96,8 @@ class AIDecisionLogger:
                            decision_data: Dict[str, Any],
                            rejected: bool = False,
                            rejection_reason: Optional[str] = None,
-                           rejected_by: Optional[str] = None):
+                           rejected_by: Optional[str] = None,
+                           mode: Optional[str] = None):
         """Atalho para logar decisão SWING."""
         self.log_decision(
             decision_type="SWING",
@@ -104,6 +108,7 @@ class AIDecisionLogger:
             raw_reason=decision_data.get('reason') or decision_data.get('rationale'),
             rejection_reason=rejection_reason if rejected else None,
             rejected_by=rejected_by if rejected else None,
+            mode=mode,
             extra_data={
                 'leverage': decision_data.get('leverage'),
                 'size_usd': decision_data.get('size_usd'),
@@ -118,7 +123,8 @@ class AIDecisionLogger:
                            decision_data: Dict[str, Any],
                            rejected: bool = False,
                            rejection_reason: Optional[str] = None,
-                           rejected_by: Optional[str] = None):
+                           rejected_by: Optional[str] = None,
+                           mode: Optional[str] = None):
         """Atalho para logar decisão SCALP."""
         self.log_decision(
             decision_type="SCALP",
@@ -129,6 +135,7 @@ class AIDecisionLogger:
             raw_reason=decision_data.get('reason'),
             rejection_reason=rejection_reason if rejected else None,
             rejected_by=rejected_by if rejected else None,
+            mode=mode,
             extra_data={
                 'leverage': decision_data.get('leverage'),
                 'size_usd': decision_data.get('size_usd'),

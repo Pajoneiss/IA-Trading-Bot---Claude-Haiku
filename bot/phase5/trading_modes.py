@@ -107,6 +107,10 @@ class TradingModeManager:
         self.current_mode = TradingMode.BALANCEADO  # Default
         self.signals_today = 0  # Contador de sinais do dia
         
+        # Cache de configurações do arquivo mode_config.json
+        self.mode_config_cache: Dict[str, Any] = {}
+        self._load_mode_config()
+        
         # Carrega modo persistido
         self._load_mode()
         
@@ -294,10 +298,126 @@ class TradingModeManager:
             Multiplicador (1.0 = padrão, >1.0 = mais rígido, <1.0 = mais permissivo)
         """
         try:
+            mode_key = self.current_mode.value
+            if mode_key in self.mode_config_cache:
+                return self.mode_config_cache[mode_key].get('quality_gate_strictness', 1.0)
             config = self.get_current_config()
             return config['quality_gate_strictness']
         except:
             return 1.0
+    
+    # ========== NOVOS MÉTODOS - CONFIGS DINÂMICAS POR MODO ==========
+    
+    MODE_CONFIG_FILE = "data/mode_config.json"
+    
+    def _load_mode_config(self):
+        """Carrega configurações do arquivo mode_config.json"""
+        try:
+            config_file = Path(self.MODE_CONFIG_FILE)
+            
+            if not config_file.exists():
+                self.logger.warning(f"[MODE] Arquivo {self.MODE_CONFIG_FILE} não encontrado. Usando configs padrão.")
+                return
+            
+            with open(config_file, 'r', encoding='utf-8') as f:
+                self.mode_config_cache = json.load(f)
+            
+            self.logger.info(f"[MODE] Configs carregadas de {self.MODE_CONFIG_FILE}: {list(self.mode_config_cache.keys())}")
+            
+        except Exception as e:
+            self.logger.error(f"[MODE] Erro ao carregar {self.MODE_CONFIG_FILE}: {e}")
+            self.mode_config_cache = {}
+    
+    def get_mode_config_value(self, key: str, default: Any = None) -> Any:
+        """
+        Retorna valor de config para o modo atual
+        
+        Args:
+            key: Nome da config (ex: 'min_conf_swing')
+            default: Valor default se não encontrar
+        """
+        mode_key = self.current_mode.value
+        if mode_key in self.mode_config_cache:
+            return self.mode_config_cache[mode_key].get(key, default)
+        return default
+    
+    def get_min_conf_swing(self) -> float:
+        """Retorna confiança mínima para SWING no modo atual"""
+        return self.get_mode_config_value('min_conf_swing', 0.80)
+    
+    def get_min_conf_scalp(self) -> float:
+        """Retorna confiança mínima para SCALP no modo atual"""
+        return self.get_mode_config_value('min_conf_scalp', 0.70)
+    
+    def get_risk_per_trade(self, ai_type: str = 'swing') -> float:
+        """
+        Retorna % de risco por trade para o tipo de IA
+        
+        Args:
+            ai_type: 'swing' ou 'scalp'
+        """
+        if ai_type == 'scalp':
+            return self.get_mode_config_value('risk_per_trade_scalp_pct', 0.35)
+        return self.get_mode_config_value('risk_per_trade_swing_pct', 0.75)
+    
+    def get_max_trades_scalp(self) -> int:
+        """Retorna limite diário de trades SCALP no modo atual"""
+        return self.get_mode_config_value('max_trades_per_day_scalp', 7)
+    
+    def get_allowed_regimes(self, ai_type: str = 'swing') -> list:
+        """
+        Retorna lista de regimes permitidos para o tipo de IA
+        
+        Args:
+            ai_type: 'swing' ou 'scalp'
+        """
+        if ai_type == 'scalp':
+            key = 'allowed_regimes_scalp'
+            default = ['TREND_BULL', 'TREND_BEAR']
+        else:
+            key = 'allowed_regimes_swing'
+            default = ['TREND_BULL', 'TREND_BEAR']
+        
+        return self.get_mode_config_value(key, default)
+    
+    def is_regime_allowed_for_type(self, regime: str, ai_type: str = 'swing') -> bool:
+        """
+        Verifica se regime é permitido para dado tipo de IA no modo atual
+        
+        Args:
+            regime: Regime de mercado (ex: 'TREND_BULL')
+            ai_type: 'swing' ou 'scalp'
+            
+        Returns:
+            True se permitido
+        """
+        allowed = self.get_allowed_regimes(ai_type)
+        is_allowed = regime in allowed
+        
+        if not is_allowed:
+            self.logger.info(
+                f"[MODE] Trade {ai_type.upper()} bloqueado: regime '{regime}' não compatível "
+                f"com modo {self.current_mode.value} "
+                f"(permitidos: {', '.join(allowed)})"
+            )
+        
+        return is_allowed
+    
+    def get_mode_summary(self) -> str:
+        """Retorna resumo do modo atual para logs/telegram"""
+        mode = self.current_mode.value
+        conf_swing = self.get_min_conf_swing()
+        conf_scalp = self.get_min_conf_scalp()
+        risk_swing = self.get_risk_per_trade('swing')
+        risk_scalp = self.get_risk_per_trade('scalp')
+        max_scalp = self.get_max_trades_scalp()
+        
+        return (
+            f"{mode}: Swing(conf≥{conf_swing:.0%}, risk={risk_swing}%) | "
+            f"Scalp(conf≥{conf_scalp:.0%}, risk={risk_scalp}%, max/day={max_scalp})"
+        )
+    
+    # ========== FIM NOVOS MÉTODOS ==========
     
     def _load_mode(self):
         """Carrega modo persistido"""

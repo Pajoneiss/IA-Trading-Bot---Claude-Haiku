@@ -1,110 +1,112 @@
-# AI Trading Behavior - Diagnóstico e Melhorias
+# Comportamento do Sistema de IA Trading
 
-## Diagnóstico: Por que o bot não estava operando?
-
-### Causas Identificadas
-
-1. **`min_confidence_open = 0.75` muito restritivo**
-   - Localização: `bot_hyperliquid.py` linha 410
-   - Se a IA retornava confidence < 0.75, trade era rejeitado silenciosamente
-   
-2. **ScalpFilters muito restritivos** (antes das mudanças)
-   - `min_volatility_pct = 0.7%` → Agora: **0.4%**
-   - `cooldown_duration = 1800s (30min)` → Agora: **900s (15min)**
-
-3. **Sem logging de decisões**
-   - Era impossível saber se a IA sugeria HOLD ou se filtros bloqueavam
-   - Agora: todas as decisões são logadas em `/data/ai_decisions.jsonl`
+Este documento descreve como o bot de trading IA decide operar e como os modos de personalidade afetam o comportamento.
 
 ---
 
-## Mudanças Implementadas
+## Arquitetura de Decisão
 
-### 1. Decision Logger (`bot/ai_decision_logger.py`)
-- Log estruturado em JSONL para diagnóstico
-- Prefixo `[DEBUG_DECISION]` em todas as decisões
-- Campos: timestamp, type (SWING/SCALP), symbol, action, confidence, rejection_reason
-
-### 2. Scalp Filters Relaxados (`bot/scalp_filters.py`)
-| Parâmetro | Antes | Agora |
-|-----------|-------|-------|
-| min_volatility_pct | 0.7% | 0.4% |
-| min_tp_pct | 0.6% | 0.5% |
-| cooldown_duration | 1800s | 900s |
-| max_trades_per_day | N/A | **8** |
-| losing_streak_cooldown | N/A | **30min após 3 perdas** |
-
-### 3. Config Centralizado (`data/ai_trading_config.json`)
-```json
-{
-  "swing": {
-    "min_confidence": 0.70,
-    "risk_per_trade_pct": 1.0
-  },
-  "scalp": {
-    "min_confidence": 0.60,
-    "risk_per_trade_pct": 0.5,
-    "max_trades_per_day": 8
-  }
-}
+```
+┌─────────────────┐    ┌─────────────────┐
+│  IA Swing       │    │  IA Scalp       │
+│ (Claude/Haiku)  │    │ (OpenAI/GPT-4o) │
+└────────┬────────┘    └────────┬────────┘
+         │                      │
+         ▼                      ▼
+┌──────────────────────────────────────────┐
+│            Quality Gate                   │
+│  • min_confidence por modo/tipo          │
+│  • regime permitido por modo             │
+│  • vela gigante, confluências            │
+└────────────────────┬─────────────────────┘
+                     │
+                     ▼
+┌──────────────────────────────────────────┐
+│           Risk Manager                    │
+│  • position sizing estrutural            │
+│  • limites de DD, trades, leverage       │
+└────────────────────┬─────────────────────┘
+                     │
+                     ▼
+                [Execução]
 ```
 
 ---
 
-## Comportamento Esperado
+## Swing: Trend Follower Estrutural
 
-### SWING (Claude)
-- **Estilo**: Trend follower estrutural
-- **Frequência**: A cada 15 minutos (configurável)
-- **Risco**: 1% da banca por trade
-- **Stop**: Estrutural (ainda usando % por ora, mas campo `structural_stop_price` suportado)
+**Filosofia**: O Swing segue tendências e posiciona stops em níveis de estrutura, não em percentuais arbitrários.
 
-### SCALP (OpenAI)
-- **Estilo**: Trades curtos, 15min-1h
-- **Frequência**: A cada 5 minutos, até 8 trades/dia
-- **Risco**: 0.5% da banca por trade
-- **Controles**:
-  - Limite de 8 trades/dia
-  - Cooldown de 15min por símbolo
-  - Cooldown de 30min após 3 perdas seguidas (losing streak)
-  - Volatilidade mínima de 0.4%
+### Entrada
+- Identifica tendência dominante (4H/1H)
+- Aguarda pullback ou reteste
+- Confirma com padrões SMC (BOS, CHoCH, OB, FVG)
+- Stop em **nível estrutural** (último swing high/low)
 
----
+### Gestão
+- **HOLD** enquanto estrutura macro intacta
+- **MOVE_STOP** para trailing em novas estruturas
+- **TRIM** (parcial) após RR ≥ 1.5
+- **EXIT** quando houver reversão de estrutura
 
-## Onde Ajustar Parâmetros
-
-| Parâmetro | Arquivo | Campo |
-|-----------|---------|-------|
-| min_confidence (Swing) | `data/ai_trading_config.json` | `swing.min_confidence` |
-| min_confidence (Scalp) | `data/ai_trading_config.json` | `scalp.min_confidence` |
-| risk_per_trade | `data/ai_trading_config.json` | `swing/scalp.risk_per_trade_pct` |
-| max_trades_per_day | `data/ai_trading_config.json` | `scalp.max_trades_per_day` |
-| min_volatility_pct | `data/ai_trading_config.json` | `scalp.min_volatility_pct` |
-| cooldown_seconds | `data/ai_trading_config.json` | `scalp.cooldown_seconds` |
+### Campos JSON Obrigatórios
+| Campo | Descrição |
+|-------|-----------|
+| `structural_stop_price` | Stop em nível de estrutura |
+| `invalid_level` | Preço onde trade fica inválido |
+| `management_plan.style` | Sempre `TREND_FOLLOW` |
+| `management_plan.trail_logic` | `SWING_HIGHS_LOWS`, `EMA21`, ou `ATR_TRAILING` |
 
 ---
 
-## Como Diagnosticar Problemas
+## Scalp: Trades Curtos de Alta Qualidade
 
-1. **Verificar log de decisões**:
-   ```bash
-   tail -f data/ai_decisions.jsonl
-   ```
+**Filosofia**: Busca movimentos rápidos (minutos/horas) com RR positivo, gerando "lucrinho semanal".
 
-2. **Filtrar por rejeições**:
-   ```bash
-   grep '"rejected": true' data/ai_decisions.jsonl
-   ```
-
-3. **Contar decisões por tipo**:
-   ```bash
-   jq -s 'group_by(.type) | map({type: .[0].type, count: length})' data/ai_decisions.jsonl
-   ```
+### Características
+- Timeframes 5m/15m com 1H como contexto
+- Stops mais apertados, alvos menores
+- Prioriza qualidade sobre quantidade
+- Não opera contra posição Swing no mesmo símbolo
 
 ---
 
-## Próximos Passos Pendentes
+## Modos de Trading
 
-- [ ] Implementar contrato Swing com `structural_stop_price`
-- [ ] Loop de gestão de posição Swing (HOLD/TRIM/EXIT/MOVE_STOP)
-- [ ] Integrar Journal com `trade_style`
+Os modos controlam quão seletivo o bot é. Configs em `data/mode_config.json`.
+
+| Parâmetro | CONSERVADOR | BALANCEADO | AGRESSIVO |
+|-----------|-------------|------------|-----------|
+| `min_conf_swing` | 0.80 | 0.74 | 0.70 |
+| `min_conf_scalp` | 0.75 | 0.68 | 0.64 |
+| `risk_per_trade_swing_pct` | 0.5% | 0.75% | 1.0% |
+| `risk_per_trade_scalp_pct` | 0.25% | 0.35% | 0.5% |
+| `max_trades_per_day_scalp` | 4 | 7 | 10 |
+| Regimes Swing | TREND apenas | +LOW_VOL | +RANGE_CHOP |
+
+### Mudar Modo
+Via Telegram: `/modo agressivo`, `/modo balanceado`, `/modo conservador`
+
+---
+
+## Onde Ajustar Configurações
+
+| Configuração | Arquivo |
+|--------------|---------|
+| Thresholds por modo | `data/mode_config.json` |
+| Limites globais de risco | Variáveis de ambiente ou `bot_hyperliquid.py` |
+| Filtros anti-overtrading | `data/ai_trading_config.json` |
+| Parâmetros do Quality Gate | No código do `QualityGate` |
+
+---
+
+## Logs de Diagnóstico
+
+Todas as decisões de IA são registradas em `data/ai_decisions.jsonl` com campos:
+- `timestamp`
+- `type`: SWING ou SCALP
+- `mode`: CONSERVADOR, BALANCEADO ou AGRESSIVO
+- `symbol`
+- `action`
+- `confidence`
+- `rejected` + `rejection_reason` + `rejected_by`

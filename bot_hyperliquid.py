@@ -28,6 +28,7 @@ from bot.telegram_notifier import TelegramNotifier
 from bot.telegram_interactive_pro import TelegramInteractivePRO as TelegramInteractive
 from bot.scalp_filters import ScalpFilters
 from bot.ai_manager import AIManager
+from bot.phase5.trading_modes import TradingModeManager, TradingMode
 
 
 # ==================== CONFIGURAÇÃO DE LOGGING ====================
@@ -518,6 +519,10 @@ class HyperliquidBot:
             'scalp_symbol_cooldown': self.action_cooldown_seconds
         })
         
+        # ========== TRADING MODE MANAGER (PHASE 5) ==========
+        self.mode_manager = TradingModeManager(logger_instance=self.logger)
+        self.logger.info(f"[MODE] {self.mode_manager.get_mode_summary()}")
+        
         # IA SCALP (OpenAI) - intervalo fixo de 30 minutos
         self.scalp_call_interval = self.SCALP_CALL_INTERVAL_MINUTES * 60  # Em segundos
         self.last_scalp_ai_call = 0  # Timestamp da última chamada SCALP
@@ -542,7 +547,8 @@ class HyperliquidBot:
         self.logger.info("=" * 60)
         self.logger.info("🤖 HYPERLIQUID BOT INICIALIZADO")
         self.logger.info(f"Network: {config['network']}")
-        self.logger.info(f"Modo: {'LIVE TRADING ⚠️' if self.live_trading else 'DRY RUN (simulação)'}")
+        self.logger.info(f"Modo Trading: {self.mode_manager.current_mode.value} 🎯")
+        self.logger.info(f"Modo Execução: {'LIVE TRADING ⚠️' if self.live_trading else 'DRY RUN (simulação)'}")
         self.logger.info(f"Pares: {', '.join(self.trading_pairs)}")
         self.logger.info(f"IA: {'Ativada ✅' if config.get('anthropic_api_key') else 'Desativada (fallback)'}")
         self.logger.info(f"🛡️ Anti-Overtrading: cooldown={self.action_cooldown_seconds}s, min_conf_adjust={self.min_confidence_adjust}")
@@ -1058,13 +1064,13 @@ class HyperliquidBot:
         # ========== PHASE 2: PARSE & QUALITY GATE ==========
         from bot.phase2 import DecisionParser, QualityGate
         
-        # Instancia Quality Gate (singleton-like)
+        # Instancia Quality Gate (singleton-like) com mode_manager
         if not hasattr(self, 'quality_gate'):
             self.quality_gate = QualityGate({
                 'min_confidence': 0.80,
                 'max_candle_body_pct': 3.0,
                 'min_confluences': 2
-            })
+            }, mode_manager=self.mode_manager)
         
         # Parse e valida todas as decisões
         validated_decisions = []

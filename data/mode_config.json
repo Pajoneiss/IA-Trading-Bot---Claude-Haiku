@@ -1,0 +1,59 @@
+{
+    "CONSERVADOR": {
+        "description": "👶 Modo ultra seletivo - apenas setups A+",
+        "min_conf_swing": 0.80,
+        "min_conf_scalp": 0.75,
+        "risk_per_trade_swing_pct": 0.5,
+        "risk_per_trade_scalp_pct": 0.25,
+        "max_trades_per_day_scalp": 4,
+        "allowed_regimes_swing": [
+            "TREND_BULL",
+            "TREND_BEAR"
+        ],
+        "allowed_regimes_scalp": [
+            "TREND_BULL",
+            "TREND_BEAR"
+        ],
+        "quality_gate_strictness": 1.2
+    },
+    "BALANCEADO": {
+        "description": "⚖️ Modo equilibrado - setups A e B",
+        "min_conf_swing": 0.74,
+        "min_conf_scalp": 0.68,
+        "risk_per_trade_swing_pct": 0.75,
+        "risk_per_trade_scalp_pct": 0.35,
+        "max_trades_per_day_scalp": 7,
+        "allowed_regimes_swing": [
+            "TREND_BULL",
+            "TREND_BEAR",
+            "LOW_VOL_DRIFT"
+        ],
+        "allowed_regimes_scalp": [
+            "TREND_BULL",
+            "TREND_BEAR",
+            "RANGE_CHOP"
+        ],
+        "quality_gate_strictness": 1.0
+    },
+    "AGRESSIVO": {
+        "description": "🔥 Mais trades com risco controlado",
+        "min_conf_swing": 0.70,
+        "min_conf_scalp": 0.64,
+        "risk_per_trade_swing_pct": 1.0,
+        "risk_per_trade_scalp_pct": 0.5,
+        "max_trades_per_day_scalp": 10,
+        "allowed_regimes_swing": [
+            "TREND_BULL",
+            "TREND_BEAR",
+            "LOW_VOL_DRIFT",
+            "RANGE_CHOP"
+        ],
+        "allowed_regimes_scalp": [
+            "TREND_BULL",
+            "TREND_BEAR",
+            "RANGE_CHOP",
+            "LOW_VOL_DRIFT"
+        ],
+        "quality_gate_strictness": 0.9
+    }
+}

@@ -21,16 +21,18 @@ class QualityGate:
     - Market Intelligence alignment
     """
     
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: Optional[Dict[str, Any]] = None, mode_manager=None):
         """
         Inicializa Quality Gate
         
         Args:
             config: Configurações opcionais
+            mode_manager: TradingModeManager para thresholds dinâmicos por modo
         """
         self.config = config or {}
+        self.mode_manager = mode_manager
         
-        # Thresholds configuráveis
+        # Thresholds configuráveis (usados como fallback se mode_manager não existir)
         self.min_confidence = self.config.get('min_confidence', 0.80)
         self.max_candle_body_pct = self.config.get('max_candle_body_pct', 3.0)
         self.min_confluences = self.config.get('min_confluences', 2)
@@ -44,8 +46,22 @@ class QualityGate:
             self._regime_analyzer = None
             logger.debug("[QUALITY GATE] Phase 3 não disponível")
         
-        logger.info(f"[QUALITY GATE] Inicializado: min_conf={self.min_confidence} | "
+        mode_str = mode_manager.current_mode.value if mode_manager else "N/A"
+        logger.info(f"[QUALITY GATE] Inicializado: mode={mode_str} | min_conf={self.min_confidence} | "
                    f"max_body={self.max_candle_body_pct}% | min_confluences={self.min_confluences}")
+    
+    def get_min_confidence(self, ai_type: str = 'swing') -> float:
+        """
+        Retorna confiança mínima considerando modo atual
+        
+        Args:
+            ai_type: 'swing' ou 'scalp'
+        """
+        if self.mode_manager:
+            if ai_type == 'scalp':
+                return self.mode_manager.get_min_conf_scalp()
+            return self.mode_manager.get_min_conf_swing()
+        return self.min_confidence
     
     def evaluate(self, 
                  decision: Dict[str, Any],
@@ -73,15 +89,32 @@ class QualityGate:
         
         symbol = decision.get('symbol', 'UNKNOWN')
         confidence = decision.get('confidence', 0.0)
+        ai_type = decision.get('style', 'swing')  # Determina se é swing ou scalp
         
-        logger.info(f"[QUALITY GATE] Avaliando {symbol}: confidence={confidence:.2f}")
+        # Obtém min_confidence dinâmico baseado no modo e tipo
+        min_conf = self.get_min_confidence(ai_type)
+        mode_str = self.mode_manager.current_mode.value if self.mode_manager else "N/A"
+        
+        logger.info(f"[QUALITY GATE] Avaliando {symbol}: confidence={confidence:.2f} | mode={mode_str} | ai_type={ai_type} | min_conf={min_conf:.2f}")
+        
+        # === CRITÉRIO 0: REGIME PERMITIDO POR MODO ===
+        if self.mode_manager and market_context:
+            # Tenta obter regime do contexto
+            regime = market_context.get('regime') or market_context.get('phase3', {}).get('regime')
+            if regime:
+                if not self.mode_manager.is_regime_allowed_for_type(regime, ai_type):
+                    result.approved = False
+                    result.confidence_score = confidence
+                    result.reasons.append(f"Regime '{regime}' não permitido para {ai_type.upper()} em modo {mode_str}")
+                    logger.warning(f"[QUALITY GATE] ❌ {symbol} rejeitado: regime {regime} não compatível com modo {mode_str}")
+                    return result
         
         # === CRITÉRIO 1: CONFIDENCE MÍNIMA ===
-        if confidence < self.min_confidence:
+        if confidence < min_conf:
             result.approved = False
             result.confidence_score = confidence
-            result.reasons.append(f"Confidence muito baixa: {confidence:.2f} < {self.min_confidence}")
-            logger.warning(f"[QUALITY GATE] ❌ {symbol} rejeitado: confidence={confidence:.2f}")
+            result.reasons.append(f"Confidence muito baixa: {confidence:.2f} < {min_conf:.2f} (modo {mode_str})")
+            logger.warning(f"[QUALITY GATE] ❌ {symbol} rejeitado: confidence={confidence:.2f} < {min_conf:.2f}")
             return result
         
         # === CRITÉRIO 2: VELA GIGANTE ===
@@ -106,7 +139,7 @@ class QualityGate:
             result.adjustments['confidence_penalty'] = penalty
             
             # Se após penalidade cair abaixo do mínimo, rejeita
-            if adjusted_conf < self.min_confidence:
+            if adjusted_conf < min_conf:
                 result.approved = False
                 result.confidence_score = adjusted_conf
                 result.reasons.append(f"Confluence penalty levou confidence para {adjusted_conf:.2f}")
