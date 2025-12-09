@@ -655,6 +655,45 @@ class HyperliquidBot:
         except Exception as e:
             self.logger.warning(f"Erro ao enviar resumo Telegram: {e}")
     
+    def _fetch_candles_cached(self, symbol: str, interval: str = "1h", limit: int = 100) -> List[Dict]:
+        """
+        Busca candles com cache local para evitar 429.
+        Cache TTL: 2 minutos para 1h.
+        """
+        import time
+        now = time.time()
+        
+        # Inicializa cache na primeira chamada se não existir
+        if not hasattr(self, '_main_candles_cache'):
+            self._main_candles_cache = {}
+            
+        cache_key = f"{symbol}_{interval}"
+        
+        # 1. Verifica Cache
+        if cache_key in self._main_candles_cache:
+            entry = self._main_candles_cache[cache_key]
+            # TTL de 120s (2 min)
+            if now - entry['timestamp'] < 120:
+                return entry['data']
+        
+        # 2. Busca API
+        try:
+            candles = self.client.get_candles(symbol, interval=interval, limit=limit)
+            if candles:
+                self._main_candles_cache[cache_key] = {
+                    'data': candles,
+                    'timestamp': now
+                }
+                return candles
+        except Exception as e:
+            # Em caso de erro (ex: 429), tenta usar cache antigo
+            if cache_key in self._main_candles_cache:
+                self.logger.warning(f"Erro API ao buscar candles {symbol}: {e}. Usando cache antigo.")
+                return self._main_candles_cache[cache_key]['data']
+            self.logger.error(f"Erro ao buscar candles {symbol}: {e}")
+            
+        return []
+
     def force_scalp_trade(self) -> Dict[str, Any]:
         """Força um scalp imediato via comando Telegram"""
         self.logger.info("[AI] FORCE_SCALP: iniciando...")
@@ -678,7 +717,7 @@ class HyperliquidBot:
                     if not price:
                         continue
                     price = float(price)
-                    candles = self.client.get_candles(pair, interval="1h", limit=50)
+                    candles = self._fetch_candles_cached(pair, interval="1h", limit=50)
                     
                     context = self.market_context.build_context_for_pair(
                         symbol=pair,
@@ -844,7 +883,8 @@ class HyperliquidBot:
                     self.logger.warning(f"{pair}: Preço inválido: {price}")
                     continue
                 
-                candles = self.client.get_candles(pair, interval="1h", limit=50)
+                # Fetch com cache para evitar 429
+                candles = self._fetch_candles_cached(pair, interval="1h", limit=50)
                 
                 # DEBUG: Log do formato de candle
                 if candles:
