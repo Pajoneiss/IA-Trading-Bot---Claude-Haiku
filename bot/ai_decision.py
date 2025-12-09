@@ -301,13 +301,21 @@ TAKE PROFIT:
             
             # Phase2 data se disponível
             phase2 = ctx.get('phase2', {})
-            if phase2:
+            if phase2 and isinstance(phase2, dict):
                 structure = phase2.get('structure')
                 patterns = phase2.get('patterns', [])
-                if structure:
+                if structure and isinstance(structure, dict):
                     prompt += f"Estrutura: {structure.get('trend', 'N/A')} | Último Swing: {structure.get('last_swing', 'N/A')}\n"
-                if patterns:
-                    prompt += f"Padrões: {', '.join([p.get('name', '') for p in patterns[:3]])}\n"
+                if patterns and isinstance(patterns, list):
+                    pattern_names = []
+                    for p in patterns[:3]:
+                        if isinstance(p, dict):
+                            pattern_names.append(p.get('name', ''))
+                        elif isinstance(p, str):
+                            pattern_names.append(p)
+                    if pattern_names:
+                        prompt += f"Padrões: {', '.join(pattern_names)}\n"
+
 
         
         # Formato de resposta
