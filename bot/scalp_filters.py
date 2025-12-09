@@ -4,8 +4,11 @@ Filtros inteligentes para evitar overtrading no motor SCALP
 """
 import logging
 import time
+import json
+import os
 from typing import Dict, List, Tuple, Optional, Any
 from collections import defaultdict, deque
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -20,47 +23,155 @@ class ScalpFilters:
     - Validação de notional mínimo
     - Cooldown por símbolo após overtrading
     - Limite de posições SCALP por símbolo
+    - Limite de trades por dia
+    - Cooldown após sequência de perdas
     """
     
     def __init__(self,
-                 min_volatility_pct: float = 0.7,
-                 min_tp_pct: float = 0.6,
+                 min_volatility_pct: float = 0.4,  # Relaxado de 0.7 para 0.4
+                 min_tp_pct: float = 0.5,  # Relaxado de 0.6 para 0.5
                  min_notional: float = 5.0,
-                 cooldown_duration_seconds: int = 1800,  # 30 minutos
+                 cooldown_duration_seconds: int = 900,  # Relaxado de 1800 para 900 (15min)
                  max_trades_for_cooldown: int = 3,
-                 max_scalp_positions_per_symbol: int = 2):
+                 max_scalp_positions_per_symbol: int = 2,
+                 max_scalp_trades_per_day: int = 8,  # NOVO
+                 losing_streak_threshold: int = 3,  # NOVO
+                 losing_streak_cooldown_minutes: int = 30):  # NOVO
         """
         Inicializa filtros SCALP
         
         Args:
-            min_volatility_pct: Volatilidade mínima em % para operar (default: 0.7%)
-            min_tp_pct: Take Profit mínimo em % para cobrir fees (default: 0.6%)
+            min_volatility_pct: Volatilidade mínima em % para operar (default: 0.4%)
+            min_tp_pct: Take Profit mínimo em % para cobrir fees (default: 0.5%)
             min_notional: Notional mínimo em USDC (default: 5.0)
-            cooldown_duration_seconds: Duração do cooldown em segundos (default: 1800 = 30min)
+            cooldown_duration_seconds: Duração do cooldown em segundos (default: 900 = 15min)
             max_trades_for_cooldown: Número de trades para ativar cooldown (default: 3)
             max_scalp_positions_per_symbol: Máximo de posições SCALP por símbolo (default: 2)
+            max_scalp_trades_per_day: Máximo de trades SCALP por dia (default: 8)
+            losing_streak_threshold: Número de perdas consecutivas para ativar cooldown (default: 3)
+            losing_streak_cooldown_minutes: Duração do cooldown após losing streak (default: 30)
         """
-        self.min_volatility_pct = min_volatility_pct
-        self.min_tp_pct = min_tp_pct
-        self.min_notional = min_notional
-        self.cooldown_duration = cooldown_duration_seconds
-        self.max_trades_for_cooldown = max_trades_for_cooldown
-        self.max_scalp_positions_per_symbol = max_scalp_positions_per_symbol
+        # Tenta carregar config do arquivo
+        config = self._load_config()
+        
+        self.min_volatility_pct = config.get('min_volatility_pct', min_volatility_pct)
+        self.min_tp_pct = config.get('min_tp_pct', min_tp_pct)
+        self.min_notional = config.get('min_notional', min_notional)
+        self.cooldown_duration = config.get('cooldown_seconds', cooldown_duration_seconds)
+        self.max_trades_for_cooldown = config.get('max_trades_for_cooldown', max_trades_for_cooldown)
+        self.max_scalp_positions_per_symbol = config.get('max_scalp_positions_per_symbol', max_scalp_positions_per_symbol)
+        self.max_scalp_trades_per_day = config.get('max_trades_per_day', max_scalp_trades_per_day)
+        self.losing_streak_threshold = config.get('losing_streak_threshold', losing_streak_threshold)
+        self.losing_streak_cooldown_minutes = config.get('losing_streak_cooldown_minutes', losing_streak_cooldown_minutes)
         
         # Rastreamento de trades por símbolo
         # {symbol: deque([(timestamp, pnl), ...])}
-        self.trade_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=10))
+        self.trade_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=20))
         
         # Cooldown ativo por símbolo
         # {symbol: timestamp_fim_cooldown}
         self.cooldowns: Dict[str, float] = {}
         
+        # Contagem diária de trades
+        self.daily_trade_count = 0
+        self.last_trade_date = ""
+        
+        # Sequência de perdas
+        self.losing_streak = 0
+        self.losing_streak_cooldown_end = 0.0
+        
         logger.info(
-            f"ScalpFilters inicializado: min_vol={min_volatility_pct}% | "
-            f"min_tp={min_tp_pct}% | min_notional=${min_notional} | "
-            f"cooldown={cooldown_duration_seconds}s | max_pos={max_scalp_positions_per_symbol}"
+            f"ScalpFilters inicializado: min_vol={self.min_volatility_pct}% | "
+            f"min_tp={self.min_tp_pct}% | min_notional=${self.min_notional} | "
+            f"cooldown={self.cooldown_duration}s | max_pos={self.max_scalp_positions_per_symbol} | "
+            f"max_trades_day={self.max_scalp_trades_per_day}"
         )
     
+    def _load_config(self) -> Dict[str, Any]:
+        """Carrega configuração do arquivo se existir"""
+        config_path = os.path.join("data", "ai_trading_config.json")
+        try:
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    data = json.load(f)
+                    return data.get('scalp', {})
+        except Exception as e:
+            logger.warning(f"Erro ao carregar config: {e}")
+        return {}
+    
+    def _reset_daily_count_if_needed(self):
+        """Reseta contagem diária se mudou o dia"""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if today != self.last_trade_date:
+            self.daily_trade_count = 0
+            self.last_trade_date = today
+            self.losing_streak = 0
+            logger.info(f"📅 Reset contagem diária de SCALP: {today}")
+    
+    def check_daily_limit(self) -> Tuple[bool, str]:
+        """
+        Verifica se atingiu o limite diário de trades SCALP
+        
+        Returns:
+            (pode_operar, motivo)
+        """
+        self._reset_daily_count_if_needed()
+        
+        if self.daily_trade_count >= self.max_scalp_trades_per_day:
+            logger.info(
+                f"[RISK] SCALP bloqueado: Limite diário atingido "
+                f"({self.daily_trade_count}/{self.max_scalp_trades_per_day})"
+            )
+            return False, f"Limite diário atingido ({self.daily_trade_count}/{self.max_scalp_trades_per_day})"
+        
+        return True, "OK"
+    
+    def check_losing_streak(self) -> Tuple[bool, str]:
+        """
+        Verifica se está em cooldown por losing streak
+        
+        Returns:
+            (pode_operar, motivo)
+        """
+        current_time = time.time()
+        
+        if current_time < self.losing_streak_cooldown_end:
+            remaining = int((self.losing_streak_cooldown_end - current_time) / 60)
+            logger.info(
+                f"[RISK] SCALP bloqueado: Losing streak cooldown "
+                f"(restam {remaining}min)"
+            )
+            return False, f"Losing streak cooldown (restam {remaining}min)"
+        
+        return True, "OK"
+    
+    def register_trade_result(self, pnl: float):
+        """
+        Registra resultado de um trade para controle de losing streak
+        
+        Args:
+            pnl: PnL do trade em USDC
+        """
+        self._reset_daily_count_if_needed()
+        self.daily_trade_count += 1
+        
+        if pnl < 0:
+            self.losing_streak += 1
+            logger.info(f"⚠️ Losing streak: {self.losing_streak}/{self.losing_streak_threshold}")
+            
+            if self.losing_streak >= self.losing_streak_threshold:
+                cooldown_seconds = self.losing_streak_cooldown_minutes * 60
+                self.losing_streak_cooldown_end = time.time() + cooldown_seconds
+                logger.warning(
+                    f"🚨 SCALP Losing Streak Cooldown ativado! "
+                    f"{self.losing_streak} perdas seguidas. "
+                    f"Cooldown de {self.losing_streak_cooldown_minutes}min."
+                )
+        else:
+            if self.losing_streak > 0:
+                logger.info(f"✅ Losing streak resetado após lucro")
+            self.losing_streak = 0
+
     def check_volatility(self, candles: List[Dict[str, Any]], symbol: str) -> Tuple[bool, str]:
         """
         Verifica se há volatilidade suficiente para scalp
@@ -86,6 +197,7 @@ class ScalpFilters:
             close = float(candle.get('c', 1))
             
             if close > 0:
+
                 range_pct = ((high - low) / close) * 100
                 ranges.append(range_pct)
         

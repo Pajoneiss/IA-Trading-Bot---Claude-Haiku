@@ -7,6 +7,7 @@ import logging
 import os
 from typing import Dict, List, Optional, Any
 import anthropic
+from bot.ai_decision_logger import get_decision_logger
 
 logger = logging.getLogger(__name__)
 
@@ -69,24 +70,44 @@ class AiDecisionEngine:
             
             decisions = self._parse_ai_response(response_text)
             
+            # Log todas as decisões para diagnóstico
+            decision_logger = get_decision_logger()
+            
             if decisions:
                 logger.info(f"✅ IA retornou {len(decisions)} decisões")
                 for dec in decisions:
                     if dec.get('action') == 'hold':
                         logger.info(f"  → HOLD: {dec.get('reason', 'sem motivo')}")
+                        decision_logger.log_swing_decision(
+                            symbol=dec.get('symbol'),
+                            decision_data=dec,
+                            rejected=False
+                        )
                     else:
                         logger.info(
                             f"  → {dec.get('symbol')} {dec.get('action')} {dec.get('side', '')} "
                             f"| ${dec.get('size_usd', 0):.0f} @ {dec.get('leverage', 1)}x"
                         )
+                        decision_logger.log_swing_decision(
+                            symbol=dec.get('symbol'),
+                            decision_data=dec,
+                            rejected=False
+                        )
             else:
                 logger.info("ℹ️  IA não recomendou nenhuma ação")
+                decision_logger.log_decision(
+                    decision_type="SWING",
+                    symbol=None,
+                    action="no_decision",
+                    raw_reason="IA não retornou decisões válidas"
+                )
             
             return decisions
             
         except Exception as e:
             logger.error(f"Erro ao consultar Claude API: {e}")
             return self._decide_fallback(market_contexts, account_info, open_positions)
+
 
     def _parse_ai_response(self, response_text: str) -> List[Dict[str, Any]]:
         """Parse da resposta da IA (suporta formato antigo e novo)"""

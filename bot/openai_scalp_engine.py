@@ -9,8 +9,10 @@ import os
 from typing import Dict, List, Optional, Any
 import openai
 from bot.scalp_filters import ScalpFilters
+from bot.ai_decision_logger import get_decision_logger
 
 logger = logging.getLogger(__name__)
+
 
 class OpenAiScalpEngine:
     """Motor de decisão IA focado em SCALP usando OpenAI"""
@@ -80,6 +82,9 @@ class OpenAiScalpEngine:
             hold_count = 0
             blocked_count = 0
             
+            # Logger para diagnóstico
+            decision_logger = get_decision_logger()
+            
             for dec in decisions:
                 dec['source'] = 'openai_scalp'
                 dec['style'] = 'scalp'
@@ -90,6 +95,11 @@ class OpenAiScalpEngine:
                     hold_count += 1
                     reason = dec.get('reason', 'Sem setup claro')
                     logger.info(f"🤚 [AI] IA SCALP decidiu HOLD: {reason}")
+                    decision_logger.log_scalp_decision(
+                        symbol=dec.get('symbol'),
+                        decision_data=dec,
+                        rejected=False
+                    )
                     filtered_decisions.append(dec)
                     
                 elif action == 'open':
@@ -105,10 +115,58 @@ class OpenAiScalpEngine:
                             break
                     
                     # Aplica filtros (sem candles por enquanto, será passado pelo bot)
-                    # Por ora, aplica apenas filtros que não dependem de candles
+                    
+                    # Filtro 0: Limite diário de trades SCALP
+                    can_trade, reason = self.filters.check_daily_limit()
+                    if not can_trade:
+                        logger.warning(f"[RISK] SCALP bloqueado: {reason}")
+                        decision_logger.log_scalp_decision(
+                            symbol=symbol,
+                            decision_data=dec,
+                            rejected=True,
+                            rejection_reason=reason,
+                            rejected_by="daily_limit_filter"
+                        )
+                        blocked_count += 1
+                        filtered_decisions.append({
+                            'action': 'hold',
+                            'reason': f"Filtro SCALP: {reason}",
+                            'source': 'openai_scalp',
+                            'style': 'scalp'
+                        })
+                        continue
+                    
+                    # Filtro 0.5: Losing streak cooldown
+                    can_trade, reason = self.filters.check_losing_streak()
+                    if not can_trade:
+                        logger.warning(f"[RISK] SCALP bloqueado: {reason}")
+                        decision_logger.log_scalp_decision(
+                            symbol=symbol,
+                            decision_data=dec,
+                            rejected=True,
+                            rejection_reason=reason,
+                            rejected_by="losing_streak_filter"
+                        )
+                        blocked_count += 1
+                        filtered_decisions.append({
+                            'action': 'hold',
+                            'reason': f"Filtro SCALP: {reason}",
+                            'source': 'openai_scalp',
+                            'style': 'scalp'
+                        })
+                        continue
+                    
+                    # Filtro 1: Cooldown por símbolo
                     can_trade, reason = self.filters.check_cooldown(symbol)
                     if not can_trade:
                         logger.warning(f"[RISK] SCALP bloqueado em {symbol}: {reason}")
+                        decision_logger.log_scalp_decision(
+                            symbol=symbol,
+                            decision_data=dec,
+                            rejected=True,
+                            rejection_reason=reason,
+                            rejected_by="cooldown_filter"
+                        )
                         blocked_count += 1
                         # Converte para HOLD
                         filtered_decisions.append({
@@ -118,10 +176,18 @@ class OpenAiScalpEngine:
                             'style': 'scalp'
                         })
                         continue
+
                     
                     can_trade, reason = self.filters.check_position_limit(symbol, open_positions)
                     if not can_trade:
                         logger.warning(f"[RISK] SCALP bloqueado em {symbol}: {reason}")
+                        decision_logger.log_scalp_decision(
+                            symbol=symbol,
+                            decision_data=dec,
+                            rejected=True,
+                            rejection_reason=reason,
+                            rejected_by="position_limit_filter"
+                        )
                         blocked_count += 1
                         filtered_decisions.append({
                             'action': 'hold',
@@ -143,6 +209,13 @@ class OpenAiScalpEngine:
                         )
                         if not can_trade:
                             logger.warning(f"[RISK] SCALP bloqueado em {symbol}: {reason}")
+                            decision_logger.log_scalp_decision(
+                                symbol=symbol,
+                                decision_data=dec,
+                                rejected=True,
+                                rejection_reason=reason,
+                                rejected_by="fee_viability_filter"
+                            )
                             blocked_count += 1
                             filtered_decisions.append({
                                 'action': 'hold',
@@ -163,11 +236,22 @@ class OpenAiScalpEngine:
                         f"action=OPEN_{side} symbol={symbol} leverage={leverage}x "
                         f"tp={tp_pct}% sl={sl_pct}% confidence={confidence:.2f}"
                     )
+                    decision_logger.log_scalp_decision(
+                        symbol=symbol,
+                        decision_data=dec,
+                        rejected=False
+                    )
                     filtered_decisions.append(dec)
             
             # Log resumo
             if trade_count == 0 and hold_count == 0 and blocked_count == 0:
                 logger.info("ℹ️  [AI] IA SCALP não retornou decisões válidas")
+                decision_logger.log_decision(
+                    decision_type="SCALP",
+                    symbol=None,
+                    action="no_decision",
+                    raw_reason="IA não retornou decisões válidas"
+                )
             else:
                 logger.info(
                     f"✅ [AI] IA SCALP: {trade_count} trade(s) aprovado(s), "
@@ -176,6 +260,7 @@ class OpenAiScalpEngine:
             
             return filtered_decisions
             
+
         except Exception as e:
             logger.error(f"❌ [AI] Erro ao consultar IA SCALP (OpenAI): {e}", exc_info=True)
             return []
