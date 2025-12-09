@@ -403,6 +403,32 @@ class TradingModeManager:
         
         return is_allowed
     
+    def get_max_open_positions(self) -> int:
+        """Retorna máximo de posições abertas simultâneas"""
+        return self.get_mode_config_value('max_open_positions', 3)
+    
+    def get_max_total_risk_open_pct(self) -> float:
+        """Retorna risco total máximo aberto em %"""
+        return self.get_mode_config_value('max_total_risk_open_pct', 5.0)
+    
+    def get_max_daily_loss_pct(self) -> float:
+        """Retorna perda diária máxima em %"""
+        return self.get_mode_config_value('max_daily_loss_pct', 4.0)
+    
+    def get_max_weekly_loss_pct(self) -> float:
+        """Retorna perda semanal máxima em %"""
+        return self.get_mode_config_value('max_weekly_loss_pct', 10.0)
+    
+    def get_management_config(self) -> Dict[str, Any]:
+        """Retorna dict com parâmetros de gestão (BE, Trim, etc)"""
+        default_mgmt = {
+            "be_rr": 1.2,
+            "first_trim_rr": 2.0,
+            "first_trim_pct": 0.5,
+            "trail_start_rr": 2.5
+        }
+        return self.get_mode_config_value('management', default_mgmt)
+    
     def get_mode_summary(self) -> str:
         """Retorna resumo do modo atual para logs/telegram"""
         mode = self.current_mode.value

@@ -277,193 +277,125 @@ class OpenAiScalpEngine:
                             account_info: Dict[str, Any],
                             open_positions: List[Dict[str, Any]],
                             risk_limits: Dict[str, Any]) -> str:
-        """Constrói prompt para IA SCALP (OpenAI) com persona Trader Virtual Chefe"""
+        """Constrói prompt para IA SCALP (OpenAI) com persona Trader Scalper Agressivo/Inteligente"""
         
-        prompt = """Você é o TRADER VIRTUAL CHEFE de um bot de trading na Hyperliquid.
+        prompt = \"\"\"Você é o TRADER SCALPER CHEFE na Hyperliquid.
+Sua missão: GERAR CAPITAL DE GIRO rápido com trades curtos (5m/15m).
 
-O código em volta de você cuida de:
-- conectar na exchange,
-- buscar preços, indicadores e notícias,
-- aplicar limites de risco (tamanho máximo, DD diário, alavancagem, margem),
-- enviar/fechar ordens.
+═══════════════════════════════════════════════════════
+🚀 FILOSOFIA: AÇÃO INTELIGENTE
+═══════════════════════════════════════════════════════
 
-VOCÊ cuida da parte mais importante: DECIDIR O QUE FAZER.
+1. NAO SEJA MEDROSO. Se o setup técnico existe, OPERE.
+2. TIMING É TUDO: Use EMAs (9/21) e VWAP para entrar no momento exato (pullback ou rompimento com volume).
+3. MULTI-ATIVO:
+   - Se já existe Swing em ZEC, você PODE e DEVE operar Scalp em ETH ou BTC.
+   - Não concentre risco abrindo Scalp + Swing no MESMO par na MESMA direção se já estiver pesado.
+   - Mas operar pares diferentes é encorajado para diversificar.
 
-Sempre que for chamado, você recebe um contexto já mastigado em texto + números.
+═══════════════════════════════════════════════════════
+📊 REGRAS TÉCNICAS (EMAs + VWAP)
+═══════════════════════════════════════════════════════
 
-Seu objetivo é agir como um trader profissional, autônomo, 24h, MAXIMIZANDO resultado de longo prazo e MINIMIZANDO risco desnecessário. Seja conservador em relação ao risco e seletivo nas entradas. Prefira NÃO operar (action="hold") a fazer um trade ruim.
+TREND FOLLOWING (Setup A+):
+- Preço acima da VWAP e EMA 21.
+- Correção (Pullback) até a EMA 9 ou 21.
+- Candle de rejeição/força a favor da tendência.
+- GATILHO: Rompimento da máxima desse candle.
 
-────────────────────────────────
-REGRAS GLOBAIS
-────────────────────────────────
-1. Nunca quebre as regras de risco informadas no contexto.
-2. Sempre respeite a direção do REGIME MACRO:
-   - Se 1D e 4H estiverem claramente bearish, prefira operar SHORT.
-   - Se 1D e 4H estiverem claramente bullish, prefira operar LONG.
-   - Evite operar contra-tendência macro; só considere contra-tendência se o contexto pedir explicitamente.
-3. Sempre considere MULTI-TIMEFRAME (1D, 4H, 1H, 15m).
-4. Evite entrar no meio de um candle explosivo já esticado. Prefira esperar pullback.
-5. Nunca abra posição diretamente contra uma posição já aberta no MESMO símbolo.
-6. Sempre explique no campo "reason" o PORQUÊ da sua decisão.
-7. Se o contexto estiver confuso, contraditório ou sem sinal claro, devolva HOLD.
+REVERSÃO / COUNTER-TREND (Setup B - Modo Agessivo):
+- Preço esticado longe das médias (sobrecompra/sovenda RSI).
+- Divergência de RSI.
+- Perda da EMA 9 com força.
+- Alvo: Mínimo até a EMA 21 ou VWAP.
 
-────────────────────────────────
-MODO SCALP (OpenAI) – TRADER DE CURTO PRAZO
-────────────────────────────────
-Este modo busca movimentos rápidos (minutos/horas). Use fortemente 15m/5m, com 1H e 4H como contexto.
+═══════════════════════════════════════════════════════
+🎚️ COMPORTAMENTO POR MODO
+═══════════════════════════════════════════════════════
 
-Quando estiver em MODO SCALP:
-- Sempre opere PRIORITARIAMENTE a favor da tendência de 1H e 4H.
-- Em dumps/pumps fortes, você PODE entrar mais cedo, desde que seja a favor do regime macro e use stops curtos.
-- Evite abrir scalp em períodos de liquidez muito baixa ou consolidações travadas.
-- Não opere SCALP contra uma posição SWING no mesmo símbolo.
-- SL e TP:
-  - Stops mais apertados, alvos menores (movimentos de 0.3% a 2%).
-  - Prefira poucos scalps de alta qualidade a muitos trades medianos.
-- Use muito bem estrutura de mercado no 15m/5m, zonas de liquidez e rejeições.
+MODO CONSERVADOR:
+- Só opera a favor da tendência macro (1H/4H).
+- Exige toque na EMA/VWAP (pullback perfeito).
+- Alvos curtos (1:1 ou 1:1.5).
 
-────────────────────────────────
-EMAs + VWAP PARA SCALP (TIMING)
-────────────────────────────────
-Use EMAs (9, 26) e VWAP em timeframes menores (5m, 15m) como ferramenta de TIMING:
+MODO BALANCEADO:
+- Aceita setup de reversão se houver falha de topo/fundo clara.
+- Pode entrar no rompimento de bandeira/pivô.
+- RR mínimo 1.5:1.
 
-1. PULLBACK EM EMA + REJEIÇÃO EM VWAP = ÓTIMOS GATILHOS
-2. Se houver EMA cross recente + tendência forte no timeframe maior:
-   - Scalp pode operar a favor da nova tendência em recuos curtos
+MODO AGRESSIVO:
+- PODE ANTECIPAR: Entrar na barra de força que cruza as médias.
+- Aceita maior frequência de trades.
+- Aceita setups com RR 1:1 se a probabilidade for alta.
+- RSI extremo não impede entrada se o Price Action confirmar continuação (Barra de exaustão vs Barra de força).
 
-REGRAS POR MODO:
-- CONSERVADOR: 
-  - EMA cross + VWAP apenas como FILTRO de confirmação
-  - Estrutura clara (HL/LH) obrigatória
-  - Entrar APENAS no pullback após confirmação
-  
-- BALANCEADO:
-  - EMA cross + VWAP pode ser gatilho se contexto estrutural ok
-  - Primeiro pullback após cross é entrada preferida
-  - Regime não pode ser RANGE_CHOP extremo
+═══════════════════════════════════════════════════════
+📝 FORMATO DA RESPOSTA (JSON OBRIGATÓRIO)
+═══════════════════════════════════════════════════════
 
-- AGRESSIVO:
-  - Pode entrar na barra do cruzamento se volume/momentum confirmar
-  - Ainda respeitar Risk Manager
-  - Evitar EMA cross em chop_score alto
-
-O QUE EVITAR (SCALP):
-- EMAs flat/emboladas em range estreito = HOLD
-- Chop score alto = HOLD
-- Sem justificativa estrutural (suporte/resistência, liquidez) = HOLD
-
-────────────────────────────────
-FORMATO DA RESPOSTA (OBRIGATÓRIO)
-────────────────────────────────
-Você SEMPRE deve responder com UM ÚNICO JSON VÁLIDO, SEM texto extra, SEM comentários, SEM markdown.
-
-Campos obrigatórios:
+Responda APENAS com este JSON.
 
 {
-  "action": "hold" | "open_long" | "open_short" | "close" | "manage",
-  "symbol": "TICKER_DO_ATIVO_OU_NULL_SE_HOLD",
-  "side": "long" | "short" | null,
-  "size_usd": NÚMERO_EM_USD_OU_0_SE_NÃO_FOR_ABRIR_NADA,
-  "leverage": NÚMERO_INTEIRO_OU_DECIMAL (ex: 5, 10, 15),
-  "stop_loss_price": PREÇO_NUMÉRICO_OU_NULL,
-  "take_profit_price": PREÇO_NUMÉRICO_OU_NULL,
-  "confidence": VALOR_DE_0_A_1 (ex: 0.65),
-  "setup_name": "nome_curto_do_setup",
-  "style": "scalp",
-  "reason": "explicação em português, 1-3 frases",
-  "source": "openai_scalp"
+  "action": "hold" | "open_long" | "open_short",
+  "symbol": "TICKER",
+  "side": "long" | "short",
+  "setup_name": "pullback_ema" | "vwap_reject" | "breakout",
+  "entry_price": preco_atual,
+  "stop_loss_price": PRECO_OBRIGATORIO,
+  "take_profit_price": PRECO_ALVO,
+  "confidence": 0.0 a 1.0 (Agressivo aceita > 0.60),
+  "leverage": 5 a 20,
+  "reason": "Explique o timing (ex: toque na ema21, rompimento vwap)"
 }
 
-Regras JSON:
-- Se não quiser operar: "action": "hold", "symbol": null, "size_usd": 0.
-- "style" deve ser SEMPRE "scalp".
-- "source" deve ser SEMPRE "openai_scalp".
+Se não for operar: {"action": "hold", "reason": "..."}
 
-"""
+IMPORTANTE:
+- O Risk Manager calcula o tamanho da posição. Você foca na QUALIDADE da entrada e no STOP.
+- NUNCA abra sem stop loss definido.
+\"\"\"
         
-        # Estado da conta
-        prompt += f"""
-══════════════════════════════════════════
-ESTADO DA CONTA
-══════════════════════════════════════════
-Equity Total: ${account_info.get('equity', 0):.2f}
-PnL do Dia: {account_info.get('daily_pnl_pct', 0):.2f}%
-Risco Máx/Trade: {risk_limits.get('risk_per_trade_pct', 2.0)}%
-"""
+        # Estado Da Conta
+        prompt += f"\\n📊 CONTA:\\nEquity: ${account_info.get('equity', 0):.2f} | Risco/Trade Limite: {risk_limits.get('risk_per_trade_pct', 1.0)}%\\n"
         
-        # Posições abertas
-        prompt += "══════════════════════════════════════════\n"
-        prompt += "POSIÇÕES ABERTAS\n"
-        prompt += "══════════════════════════════════════════\n"
-        
-        scalp_positions = {}
+        # Posições
+        prompt += f"Posições Abertas: {len(open_positions)} (Veja abaixo para não duplicar no mesmo par, mas OUTROS pares estão OK)\\n"
         if open_positions:
-            for pos in open_positions:
-                symbol = pos.get('symbol', 'N/A')
-                side = pos.get('side', 'N/A')
-                entry = pos.get('entry_price', 0)
-                size = pos.get('size', 0)
-                pnl_pct = pos.get('unrealized_pnl_pct', 0)
-                leverage = pos.get('leverage', 1)
-                strategy = pos.get('strategy', 'unknown')
-                
-                prompt += f"""
-{symbol} - {side.upper()} ({strategy})
-  Entry: ${entry:.4f}
-  Size: {size:.4f}
-  PnL: {pnl_pct:+.2f}%
-  Leverage: {leverage}x
-"""
-                if 'scalp' in strategy.lower():
-                    scalp_positions[symbol] = True
-        else:
-            prompt += "\nNenhuma posição aberta.\n"
-            
-        if scalp_positions:
-            prompt += f"\n⚠️ ATENÇÃO: Símbolos com posição SCALP aberta: {', '.join(scalp_positions.keys())}\n"
-            prompt += "NÃO abra nova posição SCALP nesses símbolos!\n"
-        
-        # Dados de mercado
-        prompt += "\n══════════════════════════════════════════\n"
-        prompt += "DADOS DE MERCADO (SCALP CONTEXT - 15m/5m Focus)\n"
-        prompt += "══════════════════════════════════════════\n"
-        
+            for p in open_positions:
+                prompt += f"- {p.get('symbol')} ({p.get('side')}): PnL {p.get('pnl_pct', 0):.2f}%\\n"
+
+        # Dados de Mercado
+        prompt += "\\n🔎 MERCADO (15m/5m):\\n"
         for ctx in market_contexts:
-            symbol = ctx.get('symbol', 'N/A')
+            symbol = ctx.get('symbol')
+            # Pular se já tem posição SCALP nesse símbolo (bot filtra, mas bom reforçar)
+            # Mas SWING no mesmo símbolo permite SCALP se a direção alinhar ou for hedge (hedge não implementado agora, então evitar contra)
+            
             price = ctx.get('price', 0)
-            ind = ctx.get('indicators', {})
-            trend = ctx.get('trend', {})
+            inds = ctx.get('indicators', {})
+            ema9 = inds.get('ema_9', 0)
+            ema21 = inds.get('ema_21', 0)
+            rsi = inds.get('rsi', 50)
+            vol = inds.get('volatility_pct', 0)
             
-            volatility = ind.get('volatility_pct', 0)
-            rsi = ind.get('rsi', 50)
+            # Formata info técnica rápida
+            trend_signal = "NEUTRO"
+            if ema9 > ema21: trend_signal = "BULLISH (EMAs alinhadas)"
+            if ema9 < ema21: trend_signal = "BEARISH (EMAs alinhadas)"
             
-            vol_warning = " ⚠️ BAIXA VOLATILIDADE" if volatility < 0.7 else ""
-            
-            prompt += f"""
-📊 {symbol}{vol_warning}
-   Preço: ${price:,.4f}
-   Tendência: {trend.get('direction', 'neutral').upper()} (Força: {trend.get('strength', 0):.2f})
-   RSI: {rsi:.1f}
-   Volatilidade: {volatility:.2f}%
-"""
-            
-            if ind.get('ema_9') and ind.get('ema_21'):
-                ema_9 = ind['ema_9']
-                ema_21 = ind['ema_21']
-                ema_cross = "BULLISH ↗" if ema_9 > ema_21 else "BEARISH ↘"
-                ema_distance = abs((ema_9 - ema_21) / ema_21) * 100
-                prompt += f"   EMAs: 9=${ema_9:.2f} vs 21=${ema_21:.2f} → {ema_cross} (dist: {ema_distance:.2f}%)\n"
+            prompt += f"=== {symbol} (${price:.4f}) ===\\n"
+            prompt += f"Trend: {trend_signal}\\n"
+            prompt += f"Indicadores: EMA9={ema9:.4f}, EMA21={ema21:.4f}, RSI={rsi:.1f}, Vol={vol:.2f}%\\n"
+            prompt += f"Contexto: {ctx.get('trend', {}).get('direction', 'neutral').upper()}\\n"
             
             if ctx.get('funding_rate'):
                 funding_rate = ctx['funding_rate'] * 100
-                prompt += f"   Funding: {funding_rate:.4f}%\n"
+                prompt += f"   Funding: {funding_rate:.4f}%\\n"
 
-        prompt += "\nRESPONDA APENAS COM O JSON VÁLIDO:"
-        
         return prompt
 
     def _parse_ai_response(self, response_text: str) -> List[Dict[str, Any]]:
-        """Parse da resposta JSON (suporta formato antigo e novo)"""
+        \"\"\"Parse da resposta JSON (suporta formato antigo e novo)\"\"\"
         try:
             # Limpa markdown
             text = response_text.strip()
@@ -542,4 +474,3 @@ Risco Máx/Trade: {risk_limits.get('risk_per_trade_pct', 2.0)}%
         except Exception as e:
             logger.error(f"Erro inesperado ao processar resposta IA: {e}")
             return []
-

@@ -1370,6 +1370,20 @@ class HyperliquidBot:
             self.logger.error(f"{symbol}: Preço inválido")
             return False
 
+        # 0.5. Cálculo de Risco Total Aberto (Estimativa Robusta)
+        # Como não persistimos o risco exato de cada posição antiga, estimamos pelo modo atual.
+        # Assumimos Worst-Case: cada posição aberta carrega o risco de um trade SWING do modo atual.
+        num_open = self.position_manager.get_positions_count()
+        risk_per_trade_swing = self.mode_manager.get_risk_per_trade('swing')
+        estimated_current_risk_pct = num_open * risk_per_trade_swing
+        
+        max_total_risk_pct = self.mode_manager.get_max_total_risk_open_pct()
+        
+        self.logger.info(
+            f"🛡️ Risco Global Estimado: {estimated_current_risk_pct:.2f}% "
+            f"(Max: {max_total_risk_pct}%) | Posições: {num_open}"
+        )
+
         # 1. Define risco base e multiplicador baseado no estilo/modo
         ai_type = 'scalp' if (strategy == 'scalp' or source == 'openai_scalp') else 'swing'
         
@@ -1392,7 +1406,9 @@ class HyperliquidBot:
                 symbol=symbol,
                 entry_price=current_price,
                 stop_price=structural_stop,
-                risk_pct=base_risk_pct # Passa o risco dinâmico do modo
+                risk_pct=base_risk_pct, # Passa o risco dinâmico do modo
+                current_total_risk_pct=estimated_current_risk_pct,
+                max_total_risk_pct=max_total_risk_pct
             )
         else:
             # Fallback para lógica percentual
@@ -1409,6 +1425,12 @@ class HyperliquidBot:
             # Se ainda for None, usa default
             if stop_loss_pct is None:
                 stop_loss_pct = 2.0
+                
+            # TAREFA 7: Bloqueio ABSOLUTO de trade sem SL
+            # Se não temos structural_stop e nem stop_loss_pct confiável (veio None/0 do input), abortar.
+            if structural_stop is None and decision.get("stop_loss_pct") is None and stop_loss_price is None:
+                self.logger.error(f"🛑 [RISK] ABORTANDO TRADE {symbol}: SL indefinido. Proibido operar sem stop.")
+                return False
             
             # 3. Calcula Position Size com Risk Manager (Padrão)
             # Temporariamente ajusta o risk_per_trade_pct do risk_manager para o valor do modo
@@ -1416,17 +1438,19 @@ class HyperliquidBot:
             
             # Vamos usar a abordagem risk_multiplier para não mexer no estado global do RiskManager se possível,
             # mas o calculate_position_size usa self.risk_per_trade_pct.
-            # O ideal é que o RiskManager suportasse override de risk_pct no método padrão também.
-            # Como não suporta, vamos calcular o multiplier.
+            # O ideal é risk_multiplier = target_risk / configured_risk
             
             rm_base_risk = self.risk_manager.risk_per_trade_pct
             dynamic_multiplier = base_risk_pct / rm_base_risk if rm_base_risk > 0 else 1.0
+            
             
             position_data = self.risk_manager.calculate_position_size(
                 symbol=symbol,
                 entry_price=current_price,
                 stop_loss_pct=stop_loss_pct,
-                risk_multiplier=dynamic_multiplier
+                risk_multiplier=dynamic_multiplier,
+                current_total_risk_pct=estimated_current_risk_pct,
+                max_total_risk_pct=max_total_risk_pct
             )
         
         if not position_data:

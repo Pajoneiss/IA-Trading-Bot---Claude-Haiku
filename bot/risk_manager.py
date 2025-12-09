@@ -93,10 +93,18 @@ class RiskManager:
         """
         self.open_positions_count = count
     
-    def can_open_new_trade(self) -> Tuple[bool, str]:
+    def can_open_new_trade(self, 
+                          current_total_risk_pct: float = 0.0,
+                          new_trade_risk_pct: float = 0.0,
+                          max_total_risk_pct: float = 100.0) -> Tuple[bool, str]:
         """
         Verifica se pode abrir novo trade
         
+        Args:
+            current_total_risk_pct: Risco total acumulado das posições abertas em %
+            new_trade_risk_pct: Risco estimado do novo trade em %
+            max_total_risk_pct: Limite máximo de risco total em %
+            
         Returns:
             (pode_operar, motivo)
         """
@@ -112,13 +120,22 @@ class RiskManager:
         if self.open_positions_count >= self.max_open_trades:
             return False, f"Máximo de trades abertos atingido: {self.open_positions_count}/{self.max_open_trades}"
         
+        # Verifica risco total acumulado
+        projected_risk = current_total_risk_pct + new_trade_risk_pct
+        if projected_risk > max_total_risk_pct:
+             return False, (f"Risco total excederia limite: Atual={current_total_risk_pct:.2f}% + "
+                            f"Novo={new_trade_risk_pct:.2f}% = {projected_risk:.2f}% "
+                            f"(Max: {max_total_risk_pct}%)")
+        
         return True, "OK"
     
     def calculate_position_size(self, 
                                 symbol: str, 
                                 entry_price: float,
                                 stop_loss_pct: float = 2.0,
-                                risk_multiplier: float = 1.0) -> Optional[Dict[str, float]]:
+                                risk_multiplier: float = 1.0,
+                                current_total_risk_pct: float = 0.0,
+                                max_total_risk_pct: float = 100.0) -> Optional[Dict[str, float]]:
         """
         Calcula tamanho da posição baseado em risco
         
@@ -127,6 +144,8 @@ class RiskManager:
             entry_price: Preço de entrada
             stop_loss_pct: % de stop loss (ex: 2.0 para -2%)
             risk_multiplier: Multiplicador de risco (default 1.0). Use < 1.0 para reduzir risco (ex: scalp).
+            current_total_risk_pct: Risco total já aberto (%)
+            max_total_risk_pct: Limite de risco total (%)
             
         Returns:
             Dict com size, notional, leverage ou None se não puder operar
@@ -143,9 +162,16 @@ class RiskManager:
             stop_loss_pct = float(stop_loss_pct)
         except (ValueError, TypeError):
             stop_loss_pct = 2.0  # default
+            
+        # Calcula quanto vai arriscar neste trade (para validar antes)
+        risk_pct_this_trade = self.risk_per_trade_pct * risk_multiplier # Simplificação
         
         # Verifica se pode operar
-        can_trade, reason = self.can_open_new_trade()
+        can_trade, reason = self.can_open_new_trade(
+            current_total_risk_pct=current_total_risk_pct,
+            new_trade_risk_pct=risk_pct_this_trade,
+            max_total_risk_pct=max_total_risk_pct
+        )
         if not can_trade:
             logger.warning(f"{symbol}: Não pode operar - {reason}")
             return None
@@ -227,7 +253,9 @@ class RiskManager:
                                         symbol: str, 
                                         entry_price: float,
                                         stop_price: float,
-                                        risk_pct: Optional[float] = None) -> Optional[Dict[str, float]]:
+                                        risk_pct: Optional[float] = None,
+                                        current_total_risk_pct: float = 0.0,
+                                        max_total_risk_pct: float = 100.0) -> Optional[Dict[str, float]]:
         """
         Calcula tamanho da posição baseado em um stop loss ESTRUTURAL (preço fixo).
         
@@ -236,6 +264,8 @@ class RiskManager:
             entry_price: Preço de entrada
             stop_price: Preço do stop loss estrutural
             risk_pct: % da banca a arriscar (se None, usa self.risk_per_trade_pct)
+            current_total_risk_pct: Risco total já aberto (%)
+            max_total_risk_pct: Limite de risco total (%)
             
         Returns:
             Dict com size, notional, leverage ou None se inválido
@@ -274,7 +304,9 @@ class RiskManager:
                 symbol=symbol, 
                 entry_price=entry_price, 
                 stop_loss_pct=stop_dist_pct,
-                risk_multiplier=1.0 # Já estamos passando o risk_pct correto via self.risk_per_trade_pct
+                risk_multiplier=1.0, # Já estamos passando o risk_pct correto via self.risk_per_trade_pct
+                current_total_risk_pct=current_total_risk_pct,
+                max_total_risk_pct=max_total_risk_pct
             )
             
             if result:

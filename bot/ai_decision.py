@@ -200,223 +200,152 @@ class AiDecisionEngine:
                       account_info: Dict[str, Any],
                       open_positions: List[Dict[str, Any]],
                       risk_limits: Dict[str, Any]) -> str:
-        """Constrói prompt para IA (Claude) com persona Trader Institucional"""
+        """Constrói prompt para IA (Claude) com persona Trader Institucional Agressivo/Inteligente"""
         
         prompt = """Você é o HEAD TRADER de um fundo quantitativo institucional.
 Especialidade: SWING TRADE usando SMC (Smart Money Concepts), Price Action Puro e Análise Multi-Timeframe.
 
 ═══════════════════════════════════════════════════════
-🎯 METODOLOGIA DE ANÁLISE
+🎯 FILOSOFIA DE TRADING & AGRESSIVIDADE
 ═══════════════════════════════════════════════════════
 
-MACRO (4H / 1H):
-- Identifique a TENDÊNCIA DOMINANTE e ESTRUTURA DE MERCADO
-- Detecte BOS (Break of Structure) e CHoCH (Change of Character)
-- Mapeie ZONAS DE LIQUIDEZ: onde stops estão acumulados
-- Identifique ORDER BLOCKS, FVG (Fair Value Gaps), BREAKER BLOCKS
-
-EXECUÇÃO (15m / 5m):
-- Timing preciso de entrada após confirmação macro
-- Aguarde PULLBACK ou RETESTE de zonas-chave
-- Confirme com REAÇÃO DO PREÇO (rejeição, engolfo, pin bar)
+SEU OBJETIVO: Maximizar retorno ajustado ao risco.
+- NÃO SEJA TIMÍDO. Se o setup existe, OPERE.
+- RSI ALTO/BAIXO NÃO É PROIBIÇÃO DE TRADE. Em tendências fortes, o RSI fica extremo por muito tempo.
+- Posição aberta em um ativo (ex: ZEC) NÃO IMPEDE abertura em outros (ex: BTC, ETH), desde que haja margem.
+- DIVERSIFIQUE: Se já está em ZEC, procure oportunidades em BTC ou ETH para não concentrar risco.
 
 ═══════════════════════════════════════════════════════
-🧠 PADRÕES E CONFLUÊNCIAS (SETUP A+)
+📊 EMAs + VWAP = TIMING DE ENTRADA (MUITO IMPORTANTE)
 ═══════════════════════════════════════════════════════
 
-REVERSÃO (mínimo 3 confluências):
-- OCO / OCO Invertido em zona institucional
-- Topo/Fundo Duplo com divergência RSI
-- Falha de rompimento (fake breakout) + volume
-- Stop hunt em região óbvia + reversão imediata
+PRIORIDADE DE ANÁLISE:
+1. ESTRUTURA (Topo/Fundo, BOS, CHoCH) = Define a direção.
+2. TIMING (EMAs 9/26 + VWAP) = Define O MOMENTO EXATO.
+3. ADICIONAL (RSI, Volume) = Confirmação ou alerta de exaustão.
 
-CONTINUAÇÃO (mínimo 2 confluências):
-- Pullback em EMA 21 com rejeição
-- Reteste de suporte/resistência rompido
-- Bandeira/Flâmula após movimento forte
+SETUP DE REVERSÃO "SNIPER":
+1. Tendência prévia exausta (velas menores, pavios).
+2. Preço cruza EMA 9 e testa EMA 26 (ou cruza ambas).
+3. EMA 9 cruza EMA 26 a favor da nova direção.
+4. Preço recupera/perde VWAP.
+5. GATILHO: Rompimento do candle de confirmação ou reteste (pullback) nas médias.
 
-═══════════════════════════════════════════════════════
-⚔️ REGRAS DE ENTRADA E SAÍDA
-═══════════════════════════════════════════════════════
-
-ANTES DE ABRIR TRADE:
-- Confirme tendência macro (4H/1H)
-- Aguarde pullback/reteste
-- Verifique confluências
-- Stop em zona estrutural clara (swing high/low)
-
-TAKE PROFIT:
-- RR mínimo 2:1 para primeiro alvo
-- Parciais em zonas de liquidez
-- Trailing após 1.5R de lucro
-
-═══════════════════════════════════════════════════════
-📊 EMAs + VWAP = FERRAMENTA DE TIMING (NÃO REGRA ABSOLUTA)
-═══════════════════════════════════════════════════════
-
-PRIORIDADE DE LEITURA:
-1. ESTRUTURA E LIQUIDEZ VÊM PRIMEIRO (BOS, CHoCH, topos/fundos, OB, FVG)
-2. Depois, confirme direção com EMAs/VWAP:
-   - Posição do preço em relação às EMAs e VWAP
-   - Inclinação das EMAs (abrindo a favor ou flat em range)
-3. EMAs/VWAP só geram trades se contexto estrutural fizer sentido!
-
-PADRÃO DE REVERSÃO TÍPICO OPERÁVEL:
-- Tendência anterior forte (alta ou baixa)
-- Perda de força: candles menores, pavios, possíveis divergências
-- EMA curta cruza a longa (ou preço respeita as duas alinhadas)
-- VWAP é recuperado (reversão de baixa) ou perdido (reversão de alta)
-- Estrutura confirma com HL (Higher Low) ou LH (Lower High)
-
-O QUE EVITAR:
-- NÃO operar TODO cruzamento de EMA
-- EMAs "emboladas" (flat) no meio de range estreito = HOLD
-- Chop score alto + range sujo = HOLD
-- Sem justificativa estrutural = HOLD
-
-═══════════════════════════════════════════════════════
-🎚️ REGRAS DE EMA/VWAP POR MODO
-═══════════════════════════════════════════════════════
+MODO AGRESSIVO/BALANCEADO:
+- PODE entrar no cruzamento ou no primeiro candle de força pós-cruzamento.
+- PODE operar continuação de tendência mesmo com RSI > 70 (Long) ou < 30 (Short), se o momentum for forte.
 
 MODO CONSERVADOR:
-- EMA cross + VWAP a favor + estrutura clara de reversão (HL/HH ou LH/LL)
-- OBRIGATÓRIO: confluência com suporte/resistência forte
-- PRIORIZE ENTRAR NO PULLBACK (reteste das EMAs/VWAP)
-- EMAs aqui são FILTRO DE CONFIRMAÇÃO, não gatilho
-
-MODO BALANCEADO:
-- EMA cross + VWAP pode ser GATILHO principal se:
-  - Contexto estrutural razoável
-  - Regime não for RANGE_CHOP extremo
-- Preferir primeiro pullback após barra de cruzamento
-- Stop abaixo do fundo que precedeu o cross (longs) ou acima do topo (shorts)
-- Aceita setups "B" se RR e risco forem aceitáveis
-
-MODO AGRESSIVO:
-- Pode antecipar: entrar na própria barra de cruzamento
-- Desde que exista:
-  - Confirmação de volume/momentum
-  - Contexto estrutural que faça sentido
-- Ainda assim: respeitar Risk Manager, evitar EMA cross em RANGE_CHOP alto
+- Exige Pullback claro e toque na EMA/VWAP antes de entrar.
 
 ═══════════════════════════════════════════════════════
+⚔️ REGRAS DE GESTÃO DE POSIÇÃO
+═══════════════════════════════════════════════════════
 
+STOP LOSS (OBRIGATÓRIO):
+- O Stop DEVE ser ESTRUTURAL (último fundo/topo válido, Order Block).
+- NUNCA abra trade sem Stop Loss definido.
+- Distância do stop define o tamanho da mão (calculado externamente, foque no PREÇO do stop).
+
+GESTÃO DINÂMICA (Trailing/Parciais):
+- Se tendência forte: DEIXE CORRER (Trailing no Swing Low anterior ou EMA 21).
+- Se lateral/perigoso: Realize parciais (Trim) rápido.
+- Breakeven: Mova para BE quando preço atingir 1R ou romper estrutura a favor.
+
+═══════════════════════════════════════════════════════
 """
 
         # Informações da conta
         prompt += f"\n📊 ESTADO DA CONTA:\n"
         prompt += f"- Equity: ${account_info.get('equity', 0):.2f}\n"
-        prompt += f"- Drawdown Hoje: {account_info.get('daily_drawdown', 0):.2f}%\n"
-        prompt += f"- Posições Abertas: {len(open_positions)}\n"
+        prompt += f"- Posições Abertas: {len(open_positions)} (Max Global: {risk_limits.get('max_open_trades', 3)})\n"
         
         # Limites de risco
-        prompt += f"\n⚠️ LIMITES DE RISCO:\n"
-        prompt += f"- Max Posições: {risk_limits.get('max_open_trades', 3)}\n"
+        prompt += f"\n⚠️ LIMITES DE RISCO (Risk Manager vai validar):\n"
+        prompt += f"- Risco Base Swing: {risk_limits.get('risk_per_trade_pct', 1.0)}% da banca\n"
         prompt += f"- Max Leverage: {risk_limits.get('max_leverage', 20)}x\n"
-        prompt += f"- Risco por Trade: {risk_limits.get('risk_per_trade_pct', 1.0)}%\n"
         
         # Posições abertas
+        open_symbols = []
         if open_positions:
-            prompt += f"\n📈 POSIÇÕES ABERTAS:\n"
+            prompt += f"\n📈 POSIÇÕES ABERTAS (Não abra contra. Pode abrir outros pares):\n"
             for pos in open_positions:
-                prompt += f"- {pos.get('symbol')}: {pos.get('side')} ${pos.get('size', 0):.2f} | PnL: {pos.get('pnl_pct', 0):.2f}%\n"
+                sym = pos.get('symbol')
+                open_symbols.append(sym)
+                prompt += f"- {sym}: {pos.get('side')} | PnL: {pos.get('pnl_pct', 0):.2f}% | Size: ${pos.get('size', 0):.2f}\n"
+        else:
+            prompt += "\n📈 POSIÇÕES ABERTAS: NENHUMA. Carteira Livre.\n"
         
         # Contexto de mercado
-        prompt += f"\n🔍 ANÁLISE DE MERCADO:\n"
+        prompt += f"\n🔍 ANÁLISE DE MERCADO (Analise TODOS para diversificar):\n"
         for ctx in market_contexts:
             symbol = ctx.get('symbol', 'UNKNOWN')
-            price = ctx.get('price', 0)  # Corrigido de 'current_price' para 'price'
+            
+            # Pula análise profunda se já posicionado no mesmo ativo (para evitar duplicação simples)
+            # Mas permite GESTÃO se for o caso. O prompt deve decidir.
+            
+            price = ctx.get('price', 0)
             
             prompt += f"\n=== {symbol} (Preço: ${price:.4f}) ===\n"
             
-            # Indicadores estão em um dict aninhado
+            # Indicadores
             indicators = ctx.get('indicators', {})
             ema9 = indicators.get('ema_9') or 0
             ema21 = indicators.get('ema_21') or 0
             rsi = indicators.get('rsi') or 50
             volatility = indicators.get('volatility_pct') or 0
             
-            prompt += f"EMA9: ${ema9:.4f} | EMA21: ${ema21:.4f} | RSI: {rsi:.1f} | Vol: {volatility:.2f}%\n"
+            prompt += f"Indicadores: EMA9=${ema9:.4f} | EMA21=${ema21:.4f} | RSI={rsi:.1f} | Vol={volatility:.2f}%\n"
             
-            # Trend está em dict aninhado
+            # Trend
             trend = ctx.get('trend', {})
             direction = trend.get('direction', 'neutral')
             strength = trend.get('strength', 0)
-            prompt += f"Tendência: {direction.upper()} (força: {strength:.2f})\n"
+            prompt += f"Tendência Macro: {direction.upper()} (Força: {strength:.2f})\n"
             
-            # Variação 24h
-            change_24h = ctx.get('price_change_24h_pct', 0)
-            prompt += f"Variação 24h: {change_24h:+.2f}%\n"
-            
-            # Phase2 data se disponível
+            # Phase2 Structure
             phase2 = ctx.get('phase2', {})
             if phase2 and isinstance(phase2, dict):
                 structure = phase2.get('structure')
                 patterns = phase2.get('patterns', [])
-                if structure and isinstance(structure, dict):
-                    prompt += f"Estrutura: {structure.get('trend', 'N/A')} | Último Swing: {structure.get('last_swing', 'N/A')}\n"
-                if patterns and isinstance(patterns, list):
-                    pattern_names = []
-                    for p in patterns[:3]:
-                        if isinstance(p, dict):
-                            pattern_names.append(p.get('name', ''))
-                        elif isinstance(p, str):
-                            pattern_names.append(p)
-                    if pattern_names:
-                        prompt += f"Padrões: {', '.join(pattern_names)}\n"
+                regime = phase2.get('regime_kv', {})
+                
+                if structure:
+                    prompt += f"Estrutura: {structure.get('trend', 'N/A')}\n"
+                
+                if regime:
+                    prompt += f"Regime: {regime.get('name', 'UNKNOWN')} (Chop: {regime.get('chop_score', 0):.1f})\n"
 
-
-        
         # Formato de resposta
         prompt += """
-
 ═══════════════════════════════════════════════════════
-📝 FORMATO DE RESPOSTA (JSON OBRIGATÓRIO)
+📝 DECISÃO (JSON OBRIGATÓRIO)
 ═══════════════════════════════════════════════════════
 
-Você é um TREND FOLLOWER ESTRUTURAL. Seu papel:
-1. Identificar tendências e entrar na direção delas
-2. Posicionar STOP em NÍVEL ESTRUTURAL (não % arbitrário)
-3. SEGURAR a posição enquanto estrutura estiver intacta
-4. SAIR quando houver reversão clara de estrutura (CHoCH/BOS contra)
+Responda APENAS com um JSON. Se não houver oportunidade, use action: hold.
 
-Responda APENAS com um JSON válido. NADA de texto antes ou depois.
-
-Se NÃO houver oportunidade clara:
-{"action": "hold", "reason": "Motivo claro e específico"}
-
-Se houver oportunidade de ABERTURA (SWING):
+PARA ABRIR TRADE (SWING):
 {
   "action": "open",
   "symbol": "SÍMBOLO",
   "side": "long" ou "short",
   "style": "swing",
-  "entry_price": preço sugerido de entrada,
-  "entry_zone": [preço_min, preço_max],
-  "structural_stop_price": preço do stop baseado em estrutura (swing high/low, OB, FVG),
-  "invalid_level": preço onde ideia de trade fica inválida,
-  "size_usd": valor entre 20-100 (calculado pelo risco),
-  "leverage": entre 3-15,
-  "confidence": 0.0 a 1.0,
+  "entry_price": preço_atual,
+  "structural_stop_price": PREÇO_EXATO_DO_STOP (fundo/topo anterior),
+  "invalid_level": preço que invalida a tese antes do stop,
   "management_plan": {
     "style": "TREND_FOLLOW",
-    "min_rr_before_trim": 1.5,
-    "trail_logic": "SWING_HIGHS_LOWS" ou "EMA21" ou "ATR_TRAILING"
+    "trail_logic": "EMA21_CLOSE"
   },
-  "regime_context": "descrição breve do regime",
-  "reason": "Setup: padrão + confluências + por que esse stop faz sentido"
+  "confidence": 0.0 a 1.0 (Seja honesto. Agressivo aceita >0.65),
+  "reason": "Explique o setup: Estrutura + Timing (EMA/VWAP) + Contexto"
 }
 
-IMPORTANTE SOBRE O STOP:
-- O stop DEVE estar em um nível estrutural claro (último swing high/low, order block, FVG)
-- NÃO use % arbitrário (ex: -2%)
-- Se não houver estrutura clara para o stop, prefira HOLD
-- A distância do stop define o tamanho da posição (risco fixo)
+Observação: O tamanho da posição (size_usd) será calculado automaticamente pelo Risk Manager com base na distância do STOP ESTRUTURAL e o % de risco do modo atual. Você foca na qualidade do Stop.
 
-Se houver ação em posição aberta:
-{"action": "close", "symbol": "SÍMBOLO", "reason": "motivo - CHoCH/reversão estrutural"}
-{"action": "increase", "symbol": "SÍMBOLO", "size_usd": 20, "reason": "piramidação em pullback"}
-{"action": "decrease", "symbol": "SÍMBOLO", "size_usd": 20, "reason": "parcial em target/exaustão"}
+Se houver posição aberta e quiser gerenciar:
+{"action": "close", "symbol": "...", "reason": "..."}
+{"action": "hold", "reason": "..."}
 """
         
         return prompt
