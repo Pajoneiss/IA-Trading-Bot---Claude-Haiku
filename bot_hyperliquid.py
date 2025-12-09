@@ -1081,6 +1081,7 @@ class HyperliquidBot:
                 self.last_scalp_decisions = []
         
         # Combina decisões de ambos os motores + gestão de posição
+        management_decisions = [] # PATCH: Position Manager 2.0 roda separadamente, sem decisões misturadas aqui
         ai_decisions = swing_decisions + scalp_decisions + management_decisions
         
         # ========== PHASE 2: PARSE & QUALITY GATE ==========
