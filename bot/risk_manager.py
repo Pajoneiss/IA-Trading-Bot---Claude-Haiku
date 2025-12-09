@@ -3,7 +3,7 @@ Risk Manager
 Gerencia risco, position sizing e limites de trading
 """
 import logging
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, Any
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -13,7 +13,7 @@ class RiskManager:
     """Gerenciador de Risco para o bot"""
     
     def __init__(self,
-                 risk_per_trade_pct: float = 10.0,
+                 risk_per_trade_pct: float = 2.0,
                  max_daily_drawdown_pct: float = 10.0,
                  max_open_trades: int = 10,
                  max_leverage: int = 50,
@@ -222,6 +222,29 @@ class RiskManager:
         )
         
         return result
+    
+    def get_status(self) -> Dict[str, Any]:
+        """
+        Retorna status completo de risco para o Telegram
+        Compatível com o formato esperado pelo TelegramInteractivePRO
+        """
+        return {
+            'state': 'RUNNING',  # Estados possíveis: RUNNING, COOLDOWN, HALTED_DAILY, HALTED_WEEKLY, HALTED_DRAWDOWN
+            'equity_peak': self.current_equity,
+            'daily_pnl': self.daily_pnl,
+            'daily_pnl_pct': self.daily_drawdown_pct,
+            'weekly_pnl': 0.0,  # Não temos tracking semanal neste RiskManager básico
+            'weekly_pnl_pct': 0.0,
+            'drawdown_pct': min(0, self.daily_drawdown_pct),  # Sempre negativo ou zero
+            'losing_streak': 0,  # Não temos tracking de streak
+            'cooldown_until': None,
+            'limits': {
+                'daily_loss_limit_pct': self.max_daily_drawdown_pct,
+                'weekly_loss_limit_pct': 15.0,  # Valor default
+                'max_drawdown_pct': self.max_daily_drawdown_pct,
+                'max_losing_streak': 5  # Valor default
+            }
+        }
     
     def get_status_summary(self) -> str:
         """Retorna resumo do status de risco"""

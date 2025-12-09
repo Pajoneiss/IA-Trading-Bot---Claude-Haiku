@@ -123,7 +123,8 @@ class TelegramNotifier:
         strategy: str,
         confidence: float,
         reason: str = "",
-        source: str = "claude_swing"
+        source: str = "claude_swing",
+        margin_type: str = "ISOLATED"
     ):
         """Notifica abertura de posição"""
         if not self.notify_on_open:
@@ -149,7 +150,7 @@ class TelegramNotifier:
             f"🧠 Origem IA: `{source_display}`\n"
             f"💰 Entry: `${entry_price:,.4f}`\n"
             f"📦 Size: `{size:.4f}`\n"
-            f"⚡ Leverage: `{leverage}x`\n"
+            f"⚡ Leverage: `{leverage}x` ({margin_type})\n"
             f"🎯 Estratégia: `{strategy.upper()}`\n"
             f"📊 Confiança: `{conf_display}`\n"
         )
@@ -321,15 +322,35 @@ class TelegramNotifier:
         
         if open_positions:
             msg += "\n*Posições Abertas:*\n"
-            for pos in open_positions[:6]:  # Máximo 6 para não ficar muito longo
+            for pos in open_positions[:10]:  # Aumentado limite para 10
                 symbol = pos.get('symbol', '?')
                 side = pos.get('side', '?')
-                pnl = pos.get('unrealized_pnl_pct', 0)
+                size = pos.get('size', 0)
+                entry_price = pos.get('entry_price', 0)
+                pnl_pct = pos.get('unrealized_pnl_pct', 0)
+                pnl_usd = pos.get('unrealized_pnl', 0)
                 
-                side_emoji = "📈" if side == 'long' else "📉"
-                pnl_indicator = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
+                # Correção de Leverage
+                leverage = pos.get('leverage')
+                if not leverage:
+                    # Tenta inferir
+                    margin_used = pos.get('margin_used', 0)
+                    notional = size * entry_price
+                    if margin_used > 0:
+                        leverage = int(notional / margin_used)
+                    else:
+                        leverage = "Cross"
                 
-                msg += f"{side_emoji} {symbol}: `{pnl:+.2f}%` {pnl_indicator}\n"
+                lev_str = f"{leverage}x" if isinstance(leverage, (int, float)) else str(leverage)
+                
+                side_emoji = "📈" if str(side).lower() == 'long' else "📉"
+                pnl_indicator = "🟢" if pnl_pct > 0 else "🔴" if pnl_pct < 0 else "⚪"
+                
+                msg += (
+                    f"{side_emoji} *{symbol}* ({lev_str})\n"
+                    f"   Entry: `${entry_price:,.4f}` | Size: `{size:.4f}`\n"
+                    f"   PnL: `{pnl_pct:+.2f}%` (`${pnl_usd:+.2f}`) {pnl_indicator}\n"
+                )
         else:
             msg += "\n_Nenhuma posição aberta_\n"
         

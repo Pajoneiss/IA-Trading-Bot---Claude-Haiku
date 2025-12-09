@@ -19,11 +19,11 @@ class AIManager:
         self.config = config or {}
         
         # Configurações de intervalo
-        # Swing: intervalo maior (ex: 15-60 min)
-        self.swing_interval_seconds = self.config.get('swing_interval_seconds', 900)  # 15 min default
+        # Swing: intervalo maior (ex: 30-60 min)
+        self.swing_interval_seconds = self.config.get('swing_interval_seconds', 1800)  # 30 min
         
         # Scalp: intervalo por símbolo (cooldown)
-        self.scalp_symbol_cooldown = self.config.get('scalp_symbol_cooldown', 300)    # 5 min default
+        self.scalp_symbol_cooldown = self.config.get('scalp_symbol_cooldown', 1800)   # 30 min (era 15)
         
         # Estado interno
         self.last_swing_call = 0
@@ -60,6 +60,8 @@ class AIManager:
         """
         Filtra quais símbolos são candidatos para SCALP.
         Regra de Ouro: NÃO operar símbolo que já tem posição aberta (Swing ou Scalp).
+        
+        IMPORTANTE: Limita a 20 símbolos por iteração (escalado para intervalo de 30 min)
         """
         candidates = []
         
@@ -83,6 +85,11 @@ class AIManager:
             #     continue
             
             candidates.append(symbol)
+            
+            # LIMITE: Máximo 20 símbolos por iteração (escalado para intervalo de 30 min)
+            if len(candidates) >= 20:
+                logger.info(f"[AIManager] Limitando análise SCALP a 20 símbolos por iteração")
+                break
             
         return candidates
 

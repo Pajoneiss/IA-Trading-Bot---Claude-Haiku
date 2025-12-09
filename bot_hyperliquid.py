@@ -25,7 +25,7 @@ from bot.market_context import MarketContext
 from bot.indicators import TechnicalIndicators
 from bot.trade_filter import TradeActionFilter
 from bot.telegram_notifier import TelegramNotifier
-from bot.telegram_interactive import TelegramInteractive
+from bot.telegram_interactive_pro import TelegramInteractivePRO as TelegramInteractive
 from bot.scalp_filters import ScalpFilters
 from bot.ai_manager import AIManager
 
@@ -143,32 +143,91 @@ class HyperliquidBotClient:
     
     def get_user_state(self) -> Dict[str, Any]:
         """Obtém estado completo da conta"""
+        import time
+        
         payload = {
             "type": "clearinghouseState",
             "user": self.wallet_address
         }
         
-        response = self.requests.post(self.info_url, json=payload, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+        # Rate limiting com retry
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Aguarda entre chamadas
+                if attempt > 0:
+                    wait_time = 2 ** attempt  # Exponential backoff: 2s, 4s
+                    self.logger.warning(f"[HYPERLIQUID] Retry {attempt+1}/{max_retries}, aguardando {wait_time}s...")
+                    time.sleep(wait_time)
+                
+                response = self.requests.post(self.info_url, json=payload, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+                
+                # Formata resposta
+                return {
+                    'account_value': float(data.get('marginSummary', {}).get('accountValue', 0)),
+                    'total_margin_used': float(data.get('marginSummary', {}).get('totalMarginUsed', 0)),
+                    'withdrawable': float(data.get('withdrawable', 0)),
+                    'assetPositions': data.get('assetPositions', [])
+                }
+                
+            except self.requests.exceptions.HTTPError as e:
+                if e.response.status_code == 429:
+                    # Rate limited
+                    if attempt == max_retries - 1:
+                        self.logger.error("[HYPERLIQUID] Rate limit persistente após retries")
+                        raise
+                    # Continua para próxima tentativa
+                    continue
+                else:
+                    # Outro erro HTTP
+                    raise
+            
+            except self.requests.exceptions.Timeout:
+                self.logger.warning(f"[HYPERLIQUID] Timeout na tentativa {attempt+1}")
+                if attempt == max_retries - 1:
+                    raise
+                continue
         
-        # Formata resposta
-        return {
-            'account_value': float(data.get('marginSummary', {}).get('accountValue', 0)),
-            'total_margin_used': float(data.get('marginSummary', {}).get('totalMarginUsed', 0)),
-            'withdrawable': float(data.get('withdrawable', 0)),
-            'assetPositions': data.get('assetPositions', [])
-        }
+        raise Exception("Max retries atingido")
     
     def get_all_mids(self) -> Dict[str, float]:
         """Obtém preços mid de todos os pares"""
+        import time
+        
         payload = {"type": "allMids"}
         
-        response = self.requests.post(self.info_url, json=payload, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        # Converte valores para float pois API retorna strings
-        return {k: float(v) for k, v in data.items()}
+        # Rate limiting com retry
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    wait_time = 2 ** attempt
+                    self.logger.warning(f"[HYPERLIQUID] get_all_mids retry {attempt+1}, aguardando {wait_time}s...")
+                    time.sleep(wait_time)
+                
+                response = self.requests.post(self.info_url, json=payload, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+                # Converte valores para float pois API retorna strings
+                return {k: float(v) for k, v in data.items()}
+                
+            except self.requests.exceptions.HTTPError as e:
+                if e.response.status_code == 429:
+                    if attempt == max_retries - 1:
+                        self.logger.error("[HYPERLIQUID] Rate limit em get_all_mids")
+                        raise
+                    continue
+                else:
+                    raise
+            
+            except self.requests.exceptions.Timeout:
+                if attempt == max_retries - 1:
+                    raise
+                continue
+        
+        raise Exception("Max retries atingido")
     
     def get_candles(self, coin: str, interval: str = "1h", limit: int = 100) -> List[Dict]:
         """Obtém candles históricos"""
@@ -383,6 +442,10 @@ class HyperliquidBot:
             min_notional=config['min_notional']
         )
         
+        # PARTE 2: Limite efetivo de posições (máximo 6)
+        self.effective_max_positions = min(config['max_open_trades'], 6)
+        self.logger.info(f"🛡️ Limite efetivo de posições: {self.effective_max_positions}")
+        
         self.ai_engine = DualAiDecisionEngine(
             anthropic_key=config.get('anthropic_api_key'),
             openai_key=config.get('openai_api_key'),
@@ -443,7 +506,7 @@ class HyperliquidBot:
         
         # ========== CONTROLE DE CHAMADAS IA ==========
         # Constante para intervalo de SCALP (fixo em código)
-        self.SCALP_CALL_INTERVAL_MINUTES = 5
+        self.SCALP_CALL_INTERVAL_MINUTES = 30
         
         # IA SWING (Claude) - intervalo configurável
         self.ai_call_interval = int(os.getenv('AI_CALL_INTERVAL_MINUTES', '15')) * 60  # Em segundos
@@ -455,9 +518,14 @@ class HyperliquidBot:
             'scalp_symbol_cooldown': self.action_cooldown_seconds
         })
         
-        # IA SCALP (OpenAI) - intervalo fixo de 5 minutos
+        # IA SCALP (OpenAI) - intervalo fixo de 30 minutos
         self.scalp_call_interval = self.SCALP_CALL_INTERVAL_MINUTES * 60  # Em segundos
         self.last_scalp_ai_call = 0  # Timestamp da última chamada SCALP
+        
+        # Contador de iterações para OpenAI (reduz rate limit)
+        # Cada iteração = 60s, então 30 minutos = 30 iterações
+        self.openai_analysis_interval = self.SCALP_CALL_INTERVAL_MINUTES  # 30 min = 30 iterações
+        self.iteration_counter = 0  # Contador de iterações
         
         # Cache de decisões
         self.last_swing_decisions = []  # Cache das últimas decisões SWING
@@ -467,6 +535,8 @@ class HyperliquidBot:
         self.openai_enabled = bool(config.get('openai_api_key'))
         if not self.openai_enabled:
             self.logger.info("[AI] OpenAI SCALP desativado: OPENAI_API_KEY não configurada.")
+        else:
+            self.logger.info(f"[AI] OpenAI SCALP: 1 análise a cada {self.openai_analysis_interval} iterações (reduz rate limit)")
         # ================================================
         
         self.logger.info("=" * 60)
@@ -694,6 +764,9 @@ class HyperliquidBot:
         if self.paused:
             self.logger.info("⏸️ Bot PAUSADO pelo usuário via Telegram. Aguardando...")
             return
+        
+        # PARTE 2: Contador de novos trades por iteração (máximo 1)
+        new_trades_this_iteration = 0
 
         # 1. Buscar dados em tempo real
         self.logger.info("📊 Buscando dados de mercado...")
@@ -739,6 +812,10 @@ class HyperliquidBot:
                 
                 candles = self.client.get_candles(pair, interval="1h", limit=50)
                 
+                # DEBUG: Log do formato de candle
+                if candles:
+                    self.logger.debug(f"[DEBUG CANDLES] {pair} formato: {list(candles[0].keys())}")
+                
                 # Busca funding rate
                 try:
                     funding_rates = self.client.get_funding_rates()
@@ -753,6 +830,43 @@ class HyperliquidBot:
                     funding_rate=funding
                 )
                 
+                # ========== PHASE 2: TECHNICAL ANALYSIS ==========
+                from bot.phase2 import TechnicalAnalysis
+                
+                if not hasattr(self, 'technical_analysis'):
+                    self.technical_analysis = TechnicalAnalysis()
+                
+                # NORMALIZA CANDLES ANTES DA ANÁLISE
+                normalized_candles = self.technical_analysis.normalize_candles(candles, logger_instance=self.logger)
+                
+                if not normalized_candles:
+                    self.logger.warning(f"[TECHNICAL ANALYSIS] {pair}: Nenhum candle válido após normalização. Pulando análise técnica.")
+                    structure = None
+                    patterns = []
+                    ema = None
+                    liquidity = None
+                else:
+                    # Análise de estrutura
+                    structure = self.technical_analysis.analyze_structure(normalized_candles, "15m")
+                    
+                    # Padrões
+                    patterns = self.technical_analysis.detect_patterns(normalized_candles)
+                    
+                    # EMA confluence (opcional)
+                    ema = self.technical_analysis.check_ema_confluence(normalized_candles)
+                    
+                    # Liquidez
+                    liquidity = self.technical_analysis.identify_liquidity_zones(normalized_candles)
+                
+                # Adiciona ao contexto
+                context['phase2'] = {
+                    'structure': structure,
+                    'patterns': patterns,
+                    'ema': ema,
+                    'liquidity': liquidity
+                }
+                # ================================================
+                
                 market_contexts.append(context)
                 
             except Exception as e:
@@ -765,6 +879,51 @@ class HyperliquidBot:
         # 5. Verificar stops/TPs das posições abertas
         self.logger.info("🎯 Verificando stops/TPs...")
         self.position_manager.log_positions_summary(all_prices)
+        
+        # ========== PHASE 2: POSITION MANAGER PRO ==========
+        # Gestão avançada: breakeven, parciais, trailing
+        from bot.phase2 import PositionManagerPro
+        
+        # Instancia Position Manager Pro (singleton-like)
+        if not hasattr(self, 'position_manager_pro'):
+            self.position_manager_pro = PositionManagerPro(
+                position_manager=self.position_manager,
+                config={
+                    'breakeven_at_r': 1.0,
+                    'partial_at_r': 2.0,
+                    'partial_pct': 0.5,
+                    'trailing_at_r': 3.0,
+                    'trailing_distance_pct': 1.0
+                }
+            )
+        
+        # Analisa cada posição para gestão
+        management_decisions = []
+        for position_dict in self.position_manager.get_all_positions():
+            symbol = position_dict['symbol']
+            current_price = all_prices.get(symbol)
+            
+            if not current_price:
+                continue
+            
+            # Converte para float
+            try:
+                current_price = float(current_price)
+            except:
+                continue
+            
+            # Analisa e sugere gestão
+            manage_suggestion = self.position_manager_pro.analyze_position(
+                symbol=symbol,
+                current_price=current_price
+            )
+            
+            if manage_suggestion:
+                management_decisions.append(manage_suggestion)
+                self.logger.info(f"[PHASE2 PRO] 💎 Gestão sugerida para {symbol}: "
+                               f"{manage_suggestion['manage_decision']['reason']}")
+        
+        # ================================================
         
         close_actions = self.position_manager.check_stops(all_prices)
         
@@ -809,7 +968,7 @@ class HyperliquidBot:
                 
                 # Filtra e taggeia
                 for dec in all_decisions:
-                    if dec.get('action') != 'hold':
+                    if dec.get('action') not in ('hold', 'skip'):
                         dec['source'] = 'claude_swing'
                         dec['style'] = 'swing'
                         swing_decisions.append(dec)
@@ -826,44 +985,65 @@ class HyperliquidBot:
         # === SCALP (OpenAI) ===
         scalp_decisions = []
         if self.openai_enabled:
-            # 1. Filtra candidatos (exclui posições abertas)
-            all_symbols = self.trading_pairs
-            open_positions_list = self.position_manager.get_all_positions()
+            # Incrementa contador de iterações
+            self.iteration_counter += 1
             
-            scalp_candidates = self.ai_manager.filter_symbols_for_scalp(
-                all_symbols, open_positions_list, market_snapshot
-            )
+            # Só analisa se chegou no intervalo (ex: 1 a cada 5 iterações)
+            should_analyze_scalp = (self.iteration_counter % self.openai_analysis_interval == 0)
             
-            # 2. Para cada candidato, decide se chama IA
-            for symbol in scalp_candidates:
-                if self.ai_manager.should_call_scalp(symbol, market_snapshot):
-                    self.logger.info(f"⚡ [AI MANAGER] Analisando SCALP para {symbol}...")
-                    
-                    # Filtra contexto apenas para este símbolo
-                    symbol_context = [ctx for ctx in market_contexts if ctx['symbol'] == symbol]
-                    
-                    if not symbol_context:
-                        continue
+            if not should_analyze_scalp:
+                self.logger.debug(f"[AI] Pulando análise OpenAI SCALP (iteração {self.iteration_counter}/{self.openai_analysis_interval})")
+                scalp_decisions = self.last_scalp_decisions  # Usa cache
+            else:
+                self.logger.info(f"⚡ [AI] Executando análise OpenAI SCALP (iteração {self.iteration_counter})")
+                
+                # 1. Filtra candidatos (exclui posições abertas)
+                all_symbols = self.trading_pairs
+                open_positions_list = self.position_manager.get_all_positions()
+                
+                scalp_candidates = self.ai_manager.filter_symbols_for_scalp(
+                    all_symbols, open_positions_list, market_snapshot
+                )
+                
+                # 2. Para cada candidato, decide se chama IA
+                for idx, symbol in enumerate(scalp_candidates):
+                    if self.ai_manager.should_call_scalp(symbol, market_snapshot):
+                        # Delay de 3s entre símbolos (exceto o primeiro)
+                        if idx > 0:
+                            self.logger.debug("[AI MANAGER] Aguardando 3s entre análises...")
+                            time.sleep(3)
                         
-                    try:
-                        decisions = self.ai_engine.scalp_engine.get_scalp_decision(
-                            market_contexts=symbol_context,
-                            account_info=account_info,
-                            open_positions=open_positions_list,
-                            risk_limits=risk_limits
-                        )
+                        self.logger.info(f"⚡ [AI MANAGER] Analisando SCALP para {symbol}...")
                         
-                        if decisions:
-                            # Taggeia
-                            for dec in decisions:
-                                dec['source'] = 'openai_scalp'
-                                dec['style'] = 'scalp'
-                                scalp_decisions.append(dec)
-                                
-                            self.ai_manager.register_scalp_call(symbol)
+                        # Filtra contexto apenas para este símbolo
+                        symbol_context = [ctx for ctx in market_contexts if ctx['symbol'] == symbol]
+                        
+                        if not symbol_context:
+                            continue
                             
-                    except Exception as e:
-                        self.logger.error(f"Erro ao chamar SCALP para {symbol}: {e}")
+                        try:
+                            decisions = self.ai_engine.scalp_engine.get_scalp_decision(
+                                market_contexts=symbol_context,
+                                account_info=account_info,
+                                open_positions=open_positions_list,
+                                risk_limits=risk_limits
+                            )
+                            
+                            if decisions:
+                                # Taggeia
+                                for dec in decisions:
+                                    if dec.get('action') not in ('hold', 'skip'):
+                                        dec['source'] = 'openai_scalp'
+                                        dec['style'] = 'scalp'
+                                        scalp_decisions.append(dec)
+                                    
+                                self.ai_manager.register_scalp_call(symbol)
+                                
+                        except Exception as e:
+                            self.logger.error(f"Erro ao chamar SCALP para {symbol}: {e}")
+                
+                # Atualiza cache
+                self.last_scalp_decisions = scalp_decisions
             
             # Atualiza cache de scalp (opcional, pois scalp é pontual)
             if scalp_decisions:
@@ -872,8 +1052,61 @@ class HyperliquidBot:
                 # Limpa cache antigo se não houve novas decisões, para não repetir trades velhos
                 self.last_scalp_decisions = []
         
-        # Combina decisões de ambos os motores
-        ai_decisions = swing_decisions + scalp_decisions
+        # Combina decisões de ambos os motores + gestão de posição
+        ai_decisions = swing_decisions + scalp_decisions + management_decisions
+        
+        # ========== PHASE 2: PARSE & QUALITY GATE ==========
+        from bot.phase2 import DecisionParser, QualityGate
+        
+        # Instancia Quality Gate (singleton-like)
+        if not hasattr(self, 'quality_gate'):
+            self.quality_gate = QualityGate({
+                'min_confidence': 0.80,
+                'max_candle_body_pct': 3.0,
+                'min_confluences': 2
+            })
+        
+        # Parse e valida todas as decisões
+        validated_decisions = []
+        for raw_decision in ai_decisions:
+            # Parse com validação
+            parsed = DecisionParser.parse_ai_decision(raw_decision, raw_decision.get('source', 'unknown'))
+            
+            if not parsed:
+                self.logger.warning(f"[PHASE2] Decisão inválida ignorada: {raw_decision.get('symbol', 'UNKNOWN')}")
+                continue
+            
+            # Sanitiza (remove NaN/None)
+            parsed = DecisionParser.sanitize_decision(parsed)
+            
+            # Quality Gate (só para action=open)
+            if parsed.get('action') == 'open':
+                # Busca contexto de mercado e MI
+                symbol = parsed.get('symbol')
+                market_ctx = market_snapshot.get(symbol, {})
+                
+                # Avalia Quality Gate
+                gate_result = self.quality_gate.evaluate(
+                    decision=parsed,
+                    market_context=market_ctx,
+                    market_intelligence=None  # TODO: integrar MI
+                )
+                
+                if not gate_result.approved:
+                    # REJEITADO
+                    self.quality_gate.log_rejection(symbol, gate_result)
+                    self.logger.warning(f"[PHASE2] 🚫 {symbol} rejeitado pelo Quality Gate")
+                    continue
+                
+                # APROVADO - atualiza confidence ajustada
+                parsed['confidence'] = gate_result.confidence_score
+                self.logger.info(f"[PHASE2] ✅ {symbol} aprovado: confidence={gate_result.confidence_score:.2f}")
+            
+            validated_decisions.append(parsed)
+        
+        # Substitui decisões originais pelas validadas
+        ai_decisions = validated_decisions
+        # ================================================
         
         # 7. Executar decisões da IA
         for decision in ai_decisions:
@@ -881,7 +1114,19 @@ class HyperliquidBot:
             symbol = decision.get('symbol', 'UNKNOWN')
             
             if action == 'open':
-                self._execute_open(decision, all_prices)
+                # PARTE 2: Limitar 1 trade por iteração
+                if new_trades_this_iteration >= 1:
+                    self.logger.info("🛡️ Limite de 1 trade por iteração atingido. Ignorando demais sinais.")
+                    break
+                
+                # Executar abertura
+                success = self._execute_open(decision, all_prices)
+                if success:
+                    new_trades_this_iteration += 1
+            
+            elif action == 'manage':
+                # PARTE 3: AI Management System
+                self._execute_manage(decision, all_prices)
                 
             elif action == 'increase':
                 self._execute_increase(decision, all_prices)
@@ -1054,8 +1299,10 @@ class HyperliquidBot:
         except Exception as e:
             self.logger.error(f"Erro ao realizar parcial: {e}")
     
-    def _execute_open(self, decision: Dict[str, Any], prices: Dict[str, float]):
-        """Executa abertura de posição - USA VALORES DA IA"""
+    def _execute_open(self, decision: Dict[str, Any], prices: Dict[str, float]) -> bool:
+        """Executa abertura de posição - USA VALORES DA IA
+        Returns: True se posição foi aberta com sucesso, False caso contrário
+        """
         symbol = decision['symbol']
         side = decision.get('side', 'long')
         size_usd = decision.get('size_usd', 20)
@@ -1076,22 +1323,44 @@ class HyperliquidBot:
             f"strategy={strategy} source={source} reason={reason}"
         )
         
+        # PARTE 5: Quality Gate - Verificar confiança mínima
+        if confidence < 0.60:
+            self.logger.warning(f"[RISK] Sinal fraco descartado: {symbol} confidence={confidence:.2f} < 0.60")
+            return False
+        
         # Verifica se já tem posição
         if self.position_manager.has_position(symbol):
             self.logger.warning(f"{symbol}: Já existe posição aberta, ignorando")
-            return
+            return False
+        
+        # PARTE 2: Bloquear trades opostos no mesmo símbolo
+        existing_pos = self.position_manager.get_position(symbol)
+        if existing_pos and existing_pos.side != side:
+            self.logger.warning(
+                f"[RISK] Trade bloqueado por conflito de direção: "
+                f"Posição existente {existing_pos.side.upper()} vs novo sinal {side.upper()}"
+            )
+            return False
+        
+        # PARTE 2: Verificar limite efetivo de posições
+        current_positions = self.position_manager.get_positions_count()
+        if current_positions >= self.effective_max_positions:
+            self.logger.warning(
+                f"[RISK] Limite de posições atingido: {current_positions}/{self.effective_max_positions}"
+            )
+            return False
             
         # Obtém preço atual
         current_price = prices.get(symbol)
         if not current_price:
             self.logger.error(f"{symbol}: Preço não disponível")
-            return
+            return False
             
         try:
             current_price = float(current_price)
         except:
             self.logger.error(f"{symbol}: Preço inválido")
-            return
+            return False
 
         # 1. Define multiplicador de risco baseado no estilo
         risk_multiplier = 1.0
@@ -1100,12 +1369,20 @@ class HyperliquidBot:
             self.logger.info(f"⚡ SCALP detectado: Reduzindo risco para {risk_multiplier}x")
             
         # 2. Calcula SL em % para o Risk Manager
-        sl_pct = 2.0
-        if stop_loss_price and current_price > 0:
+        # PARTE 1: FIX CRÍTICO - Extração segura de stop_loss_pct
+        stop_loss_pct = decision.get("stop_loss_pct")
+        if stop_loss_pct is None and stop_loss_price and current_price > 0:
+            # Calcula % a partir do preço
             if side == 'long':
-                sl_pct = ((current_price - stop_loss_price) / current_price) * 100
+                stop_loss_pct = ((current_price - stop_loss_price) / current_price) * 100
             else:
-                sl_pct = ((stop_loss_price - current_price) / current_price) * 100
+                stop_loss_pct = ((stop_loss_price - current_price) / current_price) * 100
+        
+        # Se ainda for None, usa default
+        if stop_loss_pct is None:
+            stop_loss_pct = 2.0
+        
+        sl_pct = stop_loss_pct
         
         # 3. Calcula Position Size com Risk Manager
         position_data = self.risk_manager.calculate_position_size(
@@ -1117,19 +1394,21 @@ class HyperliquidBot:
         
         if not position_data:
             self.logger.warning(f"{symbol}: Risk Manager bloqueou o trade")
-            return
+            return False
             
         # Usa valores calculados pelo Risk Manager
         size = position_data['size']
         leverage = position_data['leverage']
         
         # Recalcula TP em % para o Position Manager
-        if take_profit_price:
+        take_profit_pct = decision.get("take_profit_pct")
+        if take_profit_pct is None and take_profit_price:
             if side == 'long':
                 take_profit_pct = ((take_profit_price - current_price) / current_price) * 100
             else:
                 take_profit_pct = ((current_price - take_profit_price) / current_price) * 100
-        else:
+        
+        if take_profit_pct is None:
             take_profit_pct = 6.0  # Default
         
         self.logger.info(f"💰 Size calculado: {size:.6f} {symbol}")
@@ -1137,7 +1416,7 @@ class HyperliquidBot:
         # Modo DRY RUN
         if not self.live_trading:
             self.logger.warning("⚠️  DRY RUN MODE - Ordem NÃO executada na exchange")
-            self.logger.info(f"[SIMULAÇÃO] Abrindo {side.upper()} {symbol} @ ${current_price:.2f}")
+            self.logger.info(f"[SIMULAÇÃO] Abrindo ISOLATED {side.upper()} {symbol} @ ${current_price:.2f}")
             
             self.position_manager.add_position(
                 symbol=symbol,
@@ -1147,17 +1426,18 @@ class HyperliquidBot:
                 leverage=leverage,
                 stop_loss_pct=stop_loss_pct,
                 take_profit_pct=take_profit_pct,
-                strategy='ai_autonomous'
+                strategy=strategy
             )
-            return
+            return True
             
         # Modo LIVE
         try:
-            self.logger.info("🚀 Enviando ordem para exchange...")
+            # PARTE 1: Garantir margem ISOLATED
+            self.logger.info(f"🚀 Abrindo posição ISOLATED {symbol}...")
             
-            # 1. Ajusta alavancagem
-            self.logger.info(f"⚙️  Ajustando leverage para {leverage}x...")
-            self.client.adjust_leverage(symbol, leverage, is_cross=True)
+            # 1. Ajusta alavancagem para ISOLATED
+            self.logger.info(f"⚙️  Ajustando leverage para {leverage}x ISOLATED...")
+            self.client.adjust_leverage(symbol, leverage, is_cross=False)  # ISOLATED = False
             
             # 2. Envia ordem
             self.logger.info(f"📤 Enviando ordem MARKET {side.upper()}...")
@@ -1174,7 +1454,7 @@ class HyperliquidBot:
             
             # Verifica sucesso
             if result.get('status') == 'ok':
-                self.logger.info(f"Posição adicionada: {symbol} {side.upper()}")
+                self.logger.info(f"✅ Posição ISOLATED adicionada: {symbol} {side.upper()}")
                 self.position_manager.add_position(
                     symbol=symbol,
                     side=side,
@@ -1183,10 +1463,10 @@ class HyperliquidBot:
                     leverage=leverage,
                     stop_loss_pct=stop_loss_pct,
                     take_profit_pct=take_profit_pct,
-                    strategy='ai_autonomous'
+                    strategy=strategy
                 )
                 
-                # 📱 Notifica via Telegram
+                # 📱 Notifica via Telegram com informações completas
                 self.telegram.notify_position_opened(
                     symbol=symbol,
                     side=side,
@@ -1196,17 +1476,125 @@ class HyperliquidBot:
                     strategy=strategy,
                     confidence=confidence,
                     reason=reason,
-                    source=source
+                    source=source,
+                    margin_type="ISOLATED"  # PARTE 6: Mostrar margem no Telegram
                 )
+                return True
 
             else:
                 self.logger.error(f"❌ Falha ao abrir posição: {result}")
+                return False
                 
         except Exception as e:
             self.logger.error(f"❌ Erro crítico ao executar ordem: {e}", exc_info=True)
             self.telegram.notify_error("Erro ao abrir posição", f"{symbol}: {str(e)}")
+            return False
+    
+    def _execute_manage(self, decision: Dict[str, Any], prices: Dict[str, float]):
+        """PARTE 3: Executa gestão de posição decidida pela IA
+        Suporta: parciais, ajuste de SL/TP, breakeven, trailing stop
+        """
+        symbol = decision.get('symbol')
+        manage_decision = decision.get('manage_decision', {})
+        
+        if not symbol or not manage_decision:
+            self.logger.warning("[AI MANAGE] Decisão inválida: faltam dados")
+            return
+        
+        # Verifica se tem posição
+        if not self.position_manager.has_position(symbol):
+            self.logger.warning(f"[AI MANAGE] {symbol}: Sem posição para gerenciar")
+            return
+        
+        position = self.position_manager.get_position(symbol)
+        current_price = prices.get(symbol)
+        
+        if not current_price:
+            self.logger.error(f"[AI MANAGE] {symbol}: Preço não disponível")
+            return
+        
+        try:
+            current_price = float(current_price)
+        except:
+            self.logger.error(f"[AI MANAGE] {symbol}: Preço inválido")
+            return
+        
+        reason = manage_decision.get('reason', 'AI management')
+        
+        self.logger.info(f"🧠 [AI MANAGE] {symbol}: {reason}")
+        
+        # 1. PARCIAL (close_pct)
+        close_pct = manage_decision.get('close_pct', 0)
+        if close_pct > 0:
+            self.logger.info(f"📊 Fechando {close_pct*100:.0f}% da posição...")
+            
+            reduce_size = position.size * close_pct
+            sz_decimals = self.client.sz_decimals_cache.get(symbol, 4)
+            reduce_size = round(reduce_size, sz_decimals)
+            
+            if not self.live_trading:
+                # Simulação
+                new_size = position.size - reduce_size
+                if new_size < 0.0001:
+                    self.position_manager.remove_position(symbol)
+                else:
+                    self.position_manager.update_position(symbol, new_size, position.entry_price)
+            else:
+                # Live
+                try:
+                    is_buy_close = (position.side == 'short')
+                    result = self.client.place_order(
+                        coin=symbol,
+                        is_buy=is_buy_close,
+                        size=reduce_size,
+                        price=current_price,
+                        order_type="market",
+                        reduce_only=True
+                    )
+                    
+                    if result.get('status') == 'ok':
+                        new_size = position.size - reduce_size
+                        if new_size < 0.0001:
+                            self.position_manager.remove_position(symbol)
+                        else:
+                            self.position_manager.update_position(symbol, new_size, position.entry_price)
+                except Exception as e:
+                    self.logger.error(f"[AI MANAGE] Erro ao fechar parcial: {e}")
+        
+        # 2. AJUSTE DE STOP LOSS
+        new_stop_price = manage_decision.get('new_stop_price')
+        if new_stop_price:
+            # Calcula novo SL em %
+            if position.side == 'long':
+                new_sl_pct = ((current_price - new_stop_price) / current_price) * 100
+            else:
+                new_sl_pct = ((new_stop_price - current_price) / current_price) * 100
+            
+            # Detecta breakeven
+            if abs(new_stop_price - position.entry_price) < (position.entry_price * 0.001):  # 0.1% tolerance
+                self.logger.info(f"🎯 BREAKEVEN detectado: Movendo SL para entry @ ${position.entry_price:.2f}")
+            # Detecta trailing
+            elif (position.side == 'long' and new_stop_price > position.entry_price) or \
+                 (position.side == 'short' and new_stop_price < position.entry_price):
+                self.logger.info(f"📈 TRAILING STOP: Movendo SL para ${new_stop_price:.2f} (no lucro)")
+            else:
+                self.logger.info(f"🛡️ Ajustando SL para ${new_stop_price:.2f} ({new_sl_pct:.2f}%)")
+            
+            self.position_manager.update_stop_loss(symbol, new_sl_pct)
+        
+        # 3. AJUSTE DE TAKE PROFIT
+        new_tp_price = manage_decision.get('new_take_profit_price')
+        if new_tp_price:
+            if position.side == 'long':
+                new_tp_pct = ((new_tp_price - current_price) / current_price) * 100
+            else:
+                new_tp_pct = ((current_price - new_tp_price) / current_price) * 100
+            
+            self.logger.info(f"🎯 Ajustando TP para ${new_tp_price:.2f} ({new_tp_pct:.2f}%)")
+            self.position_manager.update_take_profit(symbol, new_tp_pct)
     
     def _execute_close(self, action: Dict[str, Any], prices: Dict[str, float]):
+
         """Executa fechamento de posição"""
         symbol = action['symbol']
         reason = action.get('reason', 'unknown')
@@ -1328,7 +1716,7 @@ def main():
         'openai_api_key': os.getenv('OPENAI_API_KEY'),
         'openai_model_scalp': os.getenv('OPENAI_MODEL', 'gpt-4o-mini'),
         'live_trading': os.getenv('LIVE_TRADING', 'false').lower() == 'true',
-        'risk_per_trade_pct': float(os.getenv('RISK_PER_TRADE_PCT', '10.0')),
+        'risk_per_trade_pct': float(os.getenv('RISK_PER_TRADE_PCT', '5.0')),  # ← CORRIGIDO: 5% em vez de 10%
         'max_daily_drawdown_pct': float(os.getenv('MAX_DAILY_DRAWDOWN_PCT', '10.0')),
         'max_open_trades': int(os.getenv('MAX_OPEN_TRADES', '10')),
         'max_leverage': int(os.getenv('MAX_LEVERAGE', '50')),
@@ -1343,6 +1731,7 @@ def main():
         'min_confidence_open': float(os.getenv('MIN_CONFIDENCE_OPEN', '0.75')),       # Confiança mín para abrir
         'min_confidence_adjust': float(os.getenv('MIN_CONFIDENCE_ADJUST', '0.82')),   # Confiança mín para increase/decrease
         'max_adjustments_per_iteration': int(os.getenv('MAX_ADJUSTMENTS_PER_ITERATION', '1')),  # Máx 1 ajuste por ciclo
+        'openai_analysis_interval': int(os.getenv('OPENAI_ANALYSIS_INTERVAL', '5')),  # Analisa 1 a cada N iterações (reduz rate limit)
         
         # ===== TELEGRAM NOTIFIER =====
         'telegram_bot_token': os.getenv('TELEGRAM_BOT_TOKEN'),
