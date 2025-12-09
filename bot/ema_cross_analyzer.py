@@ -54,6 +54,10 @@ class EMACrossAnalyzer:
         self.log = logger_instance or logging.getLogger(__name__)
         self.config = config or default_ema_config()
         self.indicators = TechnicalIndicators()
+        # Cache structure: { "symbol_timeframe": { "data": candles, "timestamp": ts } }
+        self.cache = {}
+        import time
+        self._time = time
 
     def analyze_symbol(self, symbol: str) -> Optional[EMAContext]:
         """
@@ -63,10 +67,11 @@ class EMACrossAnalyzer:
         
         try:
             for tf in self.config["timeframes"]:
-                # Busca candles
+                # Busca candles (agora com cache)
                 candles = self._fetch_candles(symbol, tf)
                 if not candles:
-                    self.log.warning(f"[EMA] Sem candles para {symbol} {tf}")
+                    # Log menos verboso se for erro recorrente
+                    # self.log.warning(f"[EMA] Sem candles para {symbol} {tf}")
                     continue
                 
                 # Calcula estado
@@ -80,8 +85,8 @@ class EMACrossAnalyzer:
             # Gera contexto agregado
             context = self._aggregate_context(symbol, states)
             
-            # Log debug do resultado
-            self._log_analysis(context)
+            # Log debug do resultado (reduzido para INFO apenas se mudar muito, ou DEBUG)
+            # self._log_analysis(context)
             
             return context
             
@@ -90,14 +95,52 @@ class EMACrossAnalyzer:
             return None
 
     def _fetch_candles(self, symbol: str, timeframe: str) -> List[Dict]:
-        """Busca candles da exchange (otimizado idealmente com cache externo, aqui direto)"""
+        """Busca candles da exchange com cache para evitar 429"""
         limit = self.config["max_bars_lookback"]
+        cache_key = f"{symbol}_{timeframe}"
+        now = self._time.time()
+        
+        # TTL por timeframe para reduzir requests
+        # 4h -> 5 min cache
+        # 1h -> 2 min cache
+        # 15m -> 1 min cache
+        # 5m -> 30s cache
+        ttls = {
+            "4h": 300,
+            "1h": 120,
+            "15m": 60,
+            "5m": 30
+        }
+        ttl = ttls.get(timeframe, 60)
+        
+        # 1. Verifica Cache
+        if cache_key in self.cache:
+            entry = self.cache[cache_key]
+            if now - entry["timestamp"] < ttl:
+                # Cache válido
+                return entry["data"]
+        
+        # 2. Busca API
         try:
             # Assume que self.client tem get_candles(symbol, interval, limit)
-            # Mapeamento de timeframe config -> API Hyperliquid
-            # Hyperliquid usa '1h', '4h', etc direto
-            return self.client.get_candles(symbol, interval=timeframe, limit=limit)
+            candles = self.client.get_candles(symbol, interval=timeframe, limit=limit)
+            
+            if candles:
+                # Atualiza Cache
+                self.cache[cache_key] = {
+                    "data": candles,
+                    "timestamp": now
+                }
+                return candles
+                
+            return []
+            
         except Exception as e:
+            # Em caso de erro (ex: 429), tenta usar cache antigo se existir
+            if cache_key in self.cache:
+                self.log.warning(f"[EMA] Erro API {e}, usando cache antigo para {symbol} {timeframe}")
+                return self.cache[cache_key]["data"]
+                
             self.log.debug(f"[EMA] Falha ao buscar candles {symbol} {timeframe}: {e}")
             return []
 
