@@ -687,6 +687,11 @@ class HyperliquidBot:
                 return candles
         except Exception as e:
             # Em caso de erro (ex: 429), tenta usar cache antigo
+            err_str = str(e)
+            if "429" in err_str or "Too Many Requests" in err_str:
+                self.logger.warning(f"⚠️ RATE LIMIT (429) em {symbol}. Pausando 5s...")
+                time.sleep(5)
+            
             if cache_key in self._main_candles_cache:
                 self.logger.warning(f"Erro API ao buscar candles {symbol}: {e}. Usando cache antigo.")
                 return self._main_candles_cache[cache_key]['data']
@@ -870,6 +875,10 @@ class HyperliquidBot:
         market_contexts = []
         
         for pair in self.trading_pairs:
+            # Throttle para evitar 429 (burst control)
+            # Processa ~2 pares por segundo (limitando requests do EMA Analyzer também)
+            time.sleep(0.5)
+            
             try:
                 price = all_prices.get(pair)
                 if not price:
