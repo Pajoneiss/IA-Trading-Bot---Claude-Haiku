@@ -447,11 +447,16 @@ class HyperliquidBot:
         self.effective_max_positions = min(config['max_open_trades'], 6)
         self.logger.info(f"🛡️ Limite efetivo de posições: {self.effective_max_positions}")
         
+        # ========== TRADING MODE MANAGER (PHASE 5) ==========
+        self.mode_manager = TradingModeManager(logger_instance=self.logger)
+        self.logger.info(f"[MODE] {self.mode_manager.get_mode_summary()}")
+        
         self.ai_engine = DualAiDecisionEngine(
             anthropic_key=config.get('anthropic_api_key'),
             openai_key=config.get('openai_api_key'),
             anthropic_model=config.get('ai_model', 'claude-3-5-haiku-20241022'),
-            openai_model=config.get('openai_model_scalp', 'gpt-4o-mini')
+            openai_model=config.get('openai_model_scalp', 'gpt-4o-mini'),
+            mode_manager=self.mode_manager
         )
         
         self.position_manager = PositionManager(
@@ -519,9 +524,6 @@ class HyperliquidBot:
             'scalp_symbol_cooldown': self.action_cooldown_seconds
         })
         
-        # ========== TRADING MODE MANAGER (PHASE 5) ==========
-        self.mode_manager = TradingModeManager(logger_instance=self.logger)
-        self.logger.info(f"[MODE] {self.mode_manager.get_mode_summary()}")
         
         # IA SCALP (OpenAI) - intervalo fixo de 30 minutos
         self.scalp_call_interval = self.SCALP_CALL_INTERVAL_MINUTES * 60  # Em segundos
@@ -1368,35 +1370,64 @@ class HyperliquidBot:
             self.logger.error(f"{symbol}: Preço inválido")
             return False
 
-        # 1. Define multiplicador de risco baseado no estilo
+        # 1. Define risco base e multiplicador baseado no estilo/modo
+        ai_type = 'scalp' if (strategy == 'scalp' or source == 'openai_scalp') else 'swing'
+        
+        # Obtém risco base do modo atual (ex: 1.0% para Swing Agressivo, 0.5% Conservador)
+        base_risk_pct = self.mode_manager.get_risk_per_trade(ai_type)
+        
+        # Se for scalp, pode aplicar redutor adicional se necessário, mas o mode_config já define bem
         risk_multiplier = 1.0
-        if strategy == 'scalp' or source == 'openai_scalp':
-            risk_multiplier = 0.5
-            self.logger.info(f"⚡ SCALP detectado: Reduzindo risco para {risk_multiplier}x")
+        
+        # Log do risco sendo usado
+        self.logger.info(f"🛡️ Risco Base ({ai_type.upper()}): {base_risk_pct}% (Modo: {self.mode_manager.current_mode.value})")
+
+        # 2. Tenta usar STOP ESTRUTURAL primeiro (Prioridade Tarefa 3)
+        structural_stop = decision.get("structural_stop_price")
+        position_data = None
+        
+        if structural_stop and structural_stop > 0:
+            self.logger.info(f"📉 Usando Stop Estrutural: ${structural_stop:.4f}")
+            position_data = self.risk_manager.calculate_position_size_structural(
+                symbol=symbol,
+                entry_price=current_price,
+                stop_price=structural_stop,
+                risk_pct=base_risk_pct # Passa o risco dinâmico do modo
+            )
+        else:
+            # Fallback para lógica percentual
             
-        # 2. Calcula SL em % para o Risk Manager
-        # PARTE 1: FIX CRÍTICO - Extração segura de stop_loss_pct
-        stop_loss_pct = decision.get("stop_loss_pct")
-        if stop_loss_pct is None and stop_loss_price and current_price > 0:
-            # Calcula % a partir do preço
-            if side == 'long':
-                stop_loss_pct = ((current_price - stop_loss_price) / current_price) * 100
-            else:
-                stop_loss_pct = ((stop_loss_price - current_price) / current_price) * 100
-        
-        # Se ainda for None, usa default
-        if stop_loss_pct is None:
-            stop_loss_pct = 2.0
-        
-        sl_pct = stop_loss_pct
-        
-        # 3. Calcula Position Size com Risk Manager
-        position_data = self.risk_manager.calculate_position_size(
-            symbol=symbol,
-            entry_price=current_price,
-            stop_loss_pct=sl_pct,
-            risk_multiplier=risk_multiplier
-        )
+            # PARTE 1: FIX CRÍTICO - Extração segura de stop_loss_pct
+            stop_loss_pct = decision.get("stop_loss_pct")
+            if stop_loss_pct is None and stop_loss_price and current_price > 0:
+                # Calcula % a partir do preço
+                if side == 'long':
+                    stop_loss_pct = ((current_price - stop_loss_price) / current_price) * 100
+                else:
+                    stop_loss_pct = ((stop_loss_price - current_price) / current_price) * 100
+            
+            # Se ainda for None, usa default
+            if stop_loss_pct is None:
+                stop_loss_pct = 2.0
+            
+            # 3. Calcula Position Size com Risk Manager (Padrão)
+            # Temporariamente ajusta o risk_per_trade_pct do risk_manager para o valor do modo
+            # (Ou poderíamos passar risk_multiplier = base_risk_pct / self.risk_manager.risk_per_trade_pct)
+            
+            # Vamos usar a abordagem risk_multiplier para não mexer no estado global do RiskManager se possível,
+            # mas o calculate_position_size usa self.risk_per_trade_pct.
+            # O ideal é que o RiskManager suportasse override de risk_pct no método padrão também.
+            # Como não suporta, vamos calcular o multiplier.
+            
+            rm_base_risk = self.risk_manager.risk_per_trade_pct
+            dynamic_multiplier = base_risk_pct / rm_base_risk if rm_base_risk > 0 else 1.0
+            
+            position_data = self.risk_manager.calculate_position_size(
+                symbol=symbol,
+                entry_price=current_price,
+                stop_loss_pct=stop_loss_pct,
+                risk_multiplier=dynamic_multiplier
+            )
         
         if not position_data:
             self.logger.warning(f"{symbol}: Risk Manager bloqueou o trade")

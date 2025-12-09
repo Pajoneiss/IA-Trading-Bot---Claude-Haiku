@@ -20,11 +20,12 @@ class DualAiDecisionEngine:
                  anthropic_key: Optional[str], 
                  openai_key: Optional[str],
                  anthropic_model: str = "claude-3-5-haiku-20241022",
-                 openai_model: str = "gpt-4o-mini"):
+                 openai_model: str = "gpt-4o-mini",
+                 mode_manager: Any = None):
         
         # Inicializa motores
         self.swing_engine = AiDecisionEngine(api_key=anthropic_key, model=anthropic_model)
-        self.scalp_engine = OpenAiScalpEngine(api_key=openai_key, model=openai_model)
+        self.scalp_engine = OpenAiScalpEngine(api_key=openai_key, model=openai_model, mode_manager=mode_manager)
         
         logger.info("🚀 Dual AI Engine Inicializado")
         logger.info(f"  → Swing: {'✅' if self.swing_engine.use_ai else '⚠️ (Fallback)'}")

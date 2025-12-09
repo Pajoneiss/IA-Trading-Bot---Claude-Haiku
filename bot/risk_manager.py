@@ -222,6 +222,70 @@ class RiskManager:
         )
         
         return result
+
+    def calculate_position_size_structural(self, 
+                                        symbol: str, 
+                                        entry_price: float,
+                                        stop_price: float,
+                                        risk_pct: Optional[float] = None) -> Optional[Dict[str, float]]:
+        """
+        Calcula tamanho da posição baseado em um stop loss ESTRUTURAL (preço fixo).
+        
+        Args:
+            symbol: Par a operar
+            entry_price: Preço de entrada
+            stop_price: Preço do stop loss estrutural
+            risk_pct: % da banca a arriscar (se None, usa self.risk_per_trade_pct)
+            
+        Returns:
+            Dict com size, notional, leverage ou None se inválido
+        """
+        if entry_price <= 0 or stop_price <= 0:
+            logger.error(f"{symbol}: Preços inválidos: Entry=${entry_price}, Stop=${stop_price}")
+            return None
+            
+        # Determina direção implícita
+        is_long = entry_price > stop_price
+        
+        # Calcula distância do stop em %
+        if is_long:
+            stop_dist_pct = ((entry_price - stop_price) / entry_price) * 100
+        else:
+            stop_dist_pct = ((stop_price - entry_price) / entry_price) * 100
+            
+        # Validações de sanidade do stop estrutural
+        if stop_dist_pct < 0.2:
+            logger.warning(f"{symbol}: Stop estrutural muito curto ({stop_dist_pct:.2f}%). Mínimo 0.2%. Rejeitando.")
+            return None
+            
+        if stop_dist_pct > 15.0:
+            logger.warning(f"{symbol}: Stop estrutural muito longo ({stop_dist_pct:.2f}%). Máximo 15%. Rejeitando.")
+            return None
+            
+        # Usa o método padrão passando a % calculada
+        # Ajusta risk_per_trade temporariamente se risk_pct for fornecido
+        original_risk = self.risk_per_trade_pct
+        if risk_pct is not None:
+            self.risk_per_trade_pct = risk_pct
+            
+        try:
+            # Chama o cálculo padrão (que já faz todas as verificações de conta, leverage, notional)
+            result = self.calculate_position_size(
+                symbol=symbol, 
+                entry_price=entry_price, 
+                stop_loss_pct=stop_dist_pct,
+                risk_multiplier=1.0 # Já estamos passando o risk_pct correto via self.risk_per_trade_pct
+            )
+            
+            if result:
+                result['stop_price_structural'] = stop_price
+                logger.info(f"{symbol} [STRUCTURAL] Stop a {stop_dist_pct:.2f}% de distância (${stop_price})")
+                
+            return result
+        finally:
+            # Restaura config original
+            if risk_pct is not None:
+                self.risk_per_trade_pct = original_risk
     
     def get_status(self) -> Dict[str, Any]:
         """

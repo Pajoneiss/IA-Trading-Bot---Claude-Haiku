@@ -17,12 +17,18 @@ logger = logging.getLogger(__name__)
 class OpenAiScalpEngine:
     """Motor de decisão IA focado em SCALP usando OpenAI"""
     
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4o-mini"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4o-mini", mode_manager: Any = None):
         self.api_key = api_key
         self.model = model
         self.client = None
         self.enabled = False
+        self.mode_manager = mode_manager
         
+        # Obtém limites do modo se disponível, senão usa defaults
+        daily_limit = 4
+        if self.mode_manager:
+            daily_limit = self.mode_manager.get_max_trades_scalp()
+            
         # Inicializa filtros anti-overtrading
         self.filters = ScalpFilters(
             min_volatility_pct=0.7,
@@ -30,7 +36,8 @@ class OpenAiScalpEngine:
             min_notional=5.0,
             cooldown_duration_seconds=1800,  # 30 min
             max_trades_for_cooldown=3,
-            max_scalp_positions_per_symbol=2
+            max_scalp_positions_per_symbol=2,
+            max_scalp_trades_per_day=daily_limit
         )
         
         if api_key:
