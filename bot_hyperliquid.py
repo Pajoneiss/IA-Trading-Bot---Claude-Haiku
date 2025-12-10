@@ -1624,7 +1624,15 @@ class HyperliquidBot:
             
             # 1. Ajusta alavancagem para ISOLATED
             self.logger.info(f"⚙️  Ajustando leverage para {leverage}x ISOLATED...")
-            self.client.adjust_leverage(symbol, leverage, is_cross=False)  # ISOLATED = False
+            try:
+                # Tenta ajustar. Se falhar, aborta para não entrar CROSS sem querer.
+                response_lev = self.client.adjust_leverage(symbol, leverage, is_cross=False)
+                # Adiciona delay para propagação
+                import time
+                time.sleep(1.0)
+            except Exception as e:
+                self.logger.error(f"🛑 Falha ao ajustar leverage para {symbol}: {e}. ABORTANDO TRADE.")
+                return False
             
             # 2. Envia ordem
             self.logger.info(f"📤 Enviando ordem MARKET {side.upper()}...")
