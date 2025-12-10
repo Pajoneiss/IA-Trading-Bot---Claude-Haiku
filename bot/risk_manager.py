@@ -180,50 +180,114 @@ class RiskManager:
             logger.error(f"{symbol}: Preço de entrada inválido: {entry_price}")
             return None
         
-        # Calcula quanto pode arriscar (em USDC)
-        # Aplica multiplicador de risco aqui
-        risk_amount = (self.risk_per_trade_pct / 100) * self.current_equity * risk_multiplier
+        # ---------------------------------------------------------------------
+        # HARD RISK LIMIT (PATCH 2.5%)
+        # Limite máximo de risco por operação: 2.5% da equity atual
+        # ---------------------------------------------------------------------
+        MAX_TRADE_RISK_PCT = 2.5  # 2.5% hard cap
         
-        # Calcula position size baseado no stop
-        # risk_amount = position_size * entry_price * (stop_loss_pct / 100)
-        # position_size = risk_amount / (entry_price * stop_loss_pct / 100)
+        # Risco base proposto
+        raw_risk_amount = (self.risk_per_trade_pct / 100) * self.current_equity * risk_multiplier
+        
+        # Teto de risco
+        max_allowed_risk_usd = self.current_equity * (MAX_TRADE_RISK_PCT / 100)
+        
+        # Verifica e ajusta
+        risk_amount = raw_risk_amount
+        was_capped = False
+        
+        if risk_amount > max_allowed_risk_usd:
+            logger.warning(
+                f"[RISK] ⚠️ Ajustando tamanho para {symbol}: "
+                f"Risco proposto ${risk_amount:.2f} > Max permitido ${max_allowed_risk_usd:.2f} (2.5%)"
+            )
+            risk_amount = max_allowed_risk_usd
+            was_capped = True
+        else:
+            logger.info(
+                f"[RISK] Trade {symbol} dentro do limite: "
+                f"Risco ${risk_amount:.2f} <= Max ${max_allowed_risk_usd:.2f}"
+            )
+
+        # ---------------------------------------------------------------------
         
         if stop_loss_pct <= 0:
             stop_loss_pct = 2.0  # default
         
-        position_size = risk_amount / (entry_price * (stop_loss_pct / 100))
-        notional_value = position_size * entry_price
+        # Recalcula position_size com o risk_amount (possivelmente clampado)
+        # Risco = Notional * (SL_PCT / 100)
+        # Notional = Risco / (SL_PCT / 100)
+        # Size = Notional / Entry
+        
+        notional_value = risk_amount / (stop_loss_pct / 100)
+        position_size = notional_value / entry_price
         
         # Calcula leverage necessária
-        leverage = notional_value / risk_amount if risk_amount > 0 else 1
+        leverage = notional_value / risk_amount if risk_amount > 0 else 1 # Para stop %, leverage não muda o risco $
         
-        # LIMITA LEVERAGE ANTES DE QUALQUER OUTRA COISA!
-        if leverage > self.max_leverage:
+        # Espera, cálculo de leverage acima está estranho para perp.
+        # Leverage = Notional / MarginCollateral.
+        # Se eu quero arriscar $X, e meu stop é Y%, então Notional = $X / Y%.
+        # Mas quanto de margem eu coloco? 
+        # Normalmente definimos Leverage primeiro ou calculamos baseado em quanto queremos alocar de banca?
+        # Aqui o bot parece definir leverage dinamicamente para caber o risco.
+        # Vamos manter a lógica original: leverage = Notional / risk_amount? NÃO.
+        # Original estava: leverage = notional_value / risk_amount.
+        # Se stop é 2%, notional = risk / 0.02 = 50 * risk.
+        # Logo leverage = 50 * risk / risk = 50x.
+        # Isso implica que a margem alocada (Isolated) seria igual ao risk_amount?
+        # Se sim, ao tomar stop de 2% com 50x, perde 100% da margem = risk_amount. Faz sentido para Isolated.
+        
+        leverage_calc = notional_value / risk_amount if risk_amount > 0 else 1
+        
+        # LIMITA LEVERAGE
+        if leverage_calc > self.max_leverage:
             leverage = self.max_leverage
-            notional_value = leverage * risk_amount
+            # Se limitou leverage, e queremos manter o RISK fixo, temos que aumentar a margem?
+            # Ou reduzir o size?
+            # Se limitarmos leverage, o Notional máximo com aquele Risk Amount (usado como margem) diminui?
+            # Se Margin = RiskAmount. MaxNotional = Margin * MaxLev.
+            # Então Notional cai. Risco Real = Notional * Stop%.
+            # Risco Real = (RiskAmount * MaxLev) * Stop%.
+            # Se Stop% * MaxLev < 1 (ex: 2% * 20x = 40%), perdemos 40% da margem apenas. Risco < RiskAmount. OK.
+            # Se Stop% * MaxLev > 1 (ex: 2% * 100x = 200%), liquidaria antes.
+            
+            # Vamos manter a lógica original de re-calculo simples:
+            # Se leverage estourou, recalculamos size baseado no max leverage permitido para aquele risk_amount (margem).
+            notional_value = self.max_leverage * risk_amount
             position_size = notional_value / entry_price
-            logger.info(f"{symbol}: Leverage limitado a {leverage}x")
+            logger.info(f"{symbol}: Leverage limitado a {self.max_leverage}x (Mantendo margin/risk fixo)")
+            leverage = self.max_leverage
+        else:
+            leverage = leverage_calc
         
         # Depois verifica MIN_NOTIONAL
         if notional_value < self.min_notional:
-            required_leverage = self.min_notional / risk_amount if risk_amount > 0 else 1
-            
-            if required_leverage > self.max_leverage:
+            # Se ficou abaixo do mínimo, tentamos aumentar alavancagem se possível?
+            # Ou abortamos?
+            if was_capped:
                 logger.warning(
-                    f"{symbol}: Notional muito baixo (${notional_value:.2f}) mesmo com max leverage. "
-                    f"Precisaria {required_leverage:.1f}x mas limite é {self.max_leverage}x. NÃO OPERANDO."
+                    f"[RISK] 🚫 Trade em {symbol} abortado: size ajustado (risco max) menor que mínimo viável. "
+                    f"Notional=${notional_value:.2f} < ${self.min_notional}"
                 )
                 return None
             
-            # Ajusta para atingir min_notional (respeitando max_leverage)
+            # Lógica legada de tentar subir leverage:
+            required_leverage = self.min_notional / risk_amount if risk_amount > 0 else 1
+            if required_leverage > self.max_leverage:
+                 logger.warning(
+                    f"{symbol}: Notional muito baixo (${notional_value:.2f}) mesmo com max leverage. "
+                    f"Precisaria {required_leverage:.1f}x. NÃO OPERANDO."
+                )
+                 return None
+            
             leverage = min(required_leverage, self.max_leverage)
             notional_value = risk_amount * leverage
             position_size = notional_value / entry_price
-            
-            logger.info(f"{symbol}: Ajustado para MIN_NOTIONAL: notional=${notional_value:.2f} | lev={leverage:.1f}x")
-        
+             
         # Round leverage para int
         leverage = int(round(leverage))
+        if leverage < 1: leverage = 1
         
         # Arredonda position size para precisão apropriada
         if entry_price > 1000:  # BTC-like
@@ -244,7 +308,7 @@ class RiskManager:
         logger.info(
             f"{symbol} Position Sizing: size={position_size:.4f} | "
             f"notional=${notional_value:.2f} | lev={leverage}x | "
-            f"risk=${risk_amount:.2f} | sl={stop_loss_pct}%"
+            f"risk=${risk_amount:.2f} {'(CAPPED)' if was_capped else ''} | sl={stop_loss_pct}%"
         )
         
         return result
