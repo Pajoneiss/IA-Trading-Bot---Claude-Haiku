@@ -31,6 +31,10 @@ from bot.ai_manager import AIManager
 from bot.phase5.trading_modes import TradingModeManager, TradingMode
 from bot.cooldown_manager import CooldownManager
 
+# PATCH v3.0 - AI Budget + Market Scanner
+from bot.ai_budget_manager import AIBudgetManager
+from bot.market_scanner import MarketScanner, ScanTrigger
+
 
 # ==================== CONFIGURAÇÃO DE LOGGING ====================
 def setup_logging(level: str = "INFO"):
@@ -571,6 +575,18 @@ class HyperliquidBot:
         from bot.ema_cross_analyzer import EMACrossAnalyzer
         self.ema_analyzer = EMACrossAnalyzer(self.client, logger_instance=self.logger)
         self.last_ema_contexts = {} # Cache para Quality Gate usar depois
+        
+        # ========== PATCH v3.0: AI BUDGET + MARKET SCANNER ==========
+        self.ai_budget = AIBudgetManager(logger_instance=self.logger)
+        self.scanner = MarketScanner(
+            ema_analyzer=self.ema_analyzer,
+            regime_analyzer=None,  # Será injetado depois se disponível
+            market_client=self.client,
+            logger_instance=self.logger
+        )
+        self.logger.info(f"[PATCH v3.0] AI Budget + Scanner inicializados")
+        self.logger.info(self.ai_budget.get_status_summary())
+        # ============================================================
     
     def _is_on_cooldown(self, symbol: str) -> bool:
         """Verifica se o ativo está em cooldown"""
@@ -1078,14 +1094,46 @@ class HyperliquidBot:
             'max_leverage': self.risk_manager.max_leverage
         }
         
-        # === SWING (Claude) ===
+        # ========== PATCH v3.0: SCANNER + AI BUDGET ==========
+        # Log status do orçamento
+        self.logger.info(self.ai_budget.get_status_summary())
+        
+        # 6.1 Roda Market Scanner
+        swing_triggers = self.scanner.scan_swing_opportunities(
+            market_contexts=market_contexts,
+            ema_contexts=self.last_ema_contexts,
+            regime_info={}  # TODO: integrar regime_info se disponível
+        )
+        
+        scalp_triggers = self.scanner.scan_scalp_opportunities(
+            market_contexts=market_contexts,
+            ema_contexts=self.last_ema_contexts
+        )
+        
+        # === SWING (Claude) via TRIGGERS ===
         swing_decisions = []
-        if self.ai_manager.should_call_swing(market_snapshot):
-            self.logger.info("🤖 [AI MANAGER] Decidiu chamar SWING (Claude)...")
+        triggers_processed_swing = 0
+        
+        for trigger in swing_triggers:
+            if triggers_processed_swing >= 3:  # Limite por iteração
+                self.logger.debug("[AI BUDGET] Limite de triggers SWING por iteração atingido")
+                break
+            
+            # Verifica orçamento
+            if not self.ai_budget.can_call_claude(trigger.trigger_type, trigger.symbol, trigger.timeframe):
+                continue  # Bloqueado por limite/cooldown
+            
+            self.logger.info(f"[AI CALL][SWING] Chamando Claude para {trigger.symbol} {trigger.timeframe} "
+                           f"por {trigger.trigger_type} (dir={trigger.direction_hint})")
             
             try:
+                # Filtra contexto para o símbolo do trigger
+                symbol_contexts = [ctx for ctx in market_contexts if ctx.get('symbol') == trigger.symbol]
+                if not symbol_contexts:
+                    symbol_contexts = market_contexts  # Fallback: todos os contextos
+                
                 all_decisions = self.ai_engine.swing_engine.decide(
-                    market_contexts=market_contexts,
+                    market_contexts=symbol_contexts,
                     account_info=account_info,
                     open_positions=self.position_manager.get_all_positions(),
                     risk_limits=risk_limits
@@ -1096,86 +1144,80 @@ class HyperliquidBot:
                     if dec.get('action') not in ('hold', 'skip'):
                         dec['source'] = 'claude_swing'
                         dec['style'] = 'swing'
+                        dec['trigger_type'] = trigger.trigger_type  # PATCH v3.0: adiciona trigger
                         swing_decisions.append(dec)
                 
+                # Registra chamada no budget
+                self.ai_budget.register_claude_call(trigger.trigger_type, trigger.symbol, trigger.timeframe)
                 self.ai_manager.register_swing_call()
-                self.last_swing_decisions = swing_decisions
+                triggers_processed_swing += 1
                 
             except Exception as e:
-                self.logger.error(f"Erro ao chamar SWING: {e}")
-        else:
-            # Mantém cache se não for hora de chamar
+                self.logger.error(f"Erro ao chamar SWING para {trigger.symbol}: {e}")
+        
+        # Atualiza cache
+        if swing_decisions:
+            self.last_swing_decisions = swing_decisions
+        
+        # Se não houve triggers, mantém cache antigo (compatibilidade)
+        if not swing_triggers:
             swing_decisions = self.last_swing_decisions
+        # ================================================
 
-        # === SCALP (OpenAI) ===
+        # === SCALP (OpenAI) via TRIGGERS ===
         scalp_decisions = []
-        if self.openai_enabled:
-            # Incrementa contador de iterações
-            self.iteration_counter += 1
-            
-            # Só analisa se chegou no intervalo (ex: 1 a cada 5 iterações)
-            should_analyze_scalp = (self.iteration_counter % self.openai_analysis_interval == 0)
-            
-            if not should_analyze_scalp:
-                self.logger.debug(f"[AI] Pulando análise OpenAI SCALP (iteração {self.iteration_counter}/{self.openai_analysis_interval})")
-                scalp_decisions = self.last_scalp_decisions  # Usa cache
-            else:
-                self.logger.info(f"⚡ [AI] Executando análise OpenAI SCALP (iteração {self.iteration_counter})")
+        triggers_processed_scalp = 0
+        
+        if self.openai_enabled and scalp_triggers:
+            for trigger in scalp_triggers:
+                if triggers_processed_scalp >= 5:  # Limite por iteração
+                    self.logger.debug("[AI BUDGET] Limite de triggers SCALP por iteração atingido")
+                    break
                 
-                # 1. Filtra candidatos (exclui posições abertas)
-                all_symbols = self.trading_pairs
-                open_positions_list = self.position_manager.get_all_positions()
+                # Verifica orçamento
+                if not self.ai_budget.can_call_openai(trigger.trigger_type, trigger.symbol, trigger.timeframe):
+                    continue  # Bloqueado por limite/cooldown
                 
-                scalp_candidates = self.ai_manager.filter_symbols_for_scalp(
-                    all_symbols, open_positions_list, market_snapshot
-                )
+                self.logger.info(f"[AI CALL][SCALP] Chamando OpenAI para {trigger.symbol} {trigger.timeframe} "
+                               f"por {trigger.trigger_type} (dir={trigger.direction_hint})")
                 
-                # 2. Para cada candidato, decide se chama IA
-                for idx, symbol in enumerate(scalp_candidates):
-                    if self.ai_manager.should_call_scalp(symbol, market_snapshot):
-                        # Delay de 3s entre símbolos (exceto o primeiro)
-                        if idx > 0:
-                            self.logger.debug("[AI MANAGER] Aguardando 3s entre análises...")
-                            time.sleep(3)
+                try:
+                    # Filtra contexto para o símbolo
+                    symbol_context = [ctx for ctx in market_contexts if ctx.get('symbol') == trigger.symbol]
+                    if not symbol_context:
+                        continue
+                    
+                    decisions = self.ai_engine.scalp_engine.get_scalp_decision(
+                        market_contexts=symbol_context,
+                        account_info=account_info,
+                        open_positions=self.position_manager.get_all_positions(),
+                        risk_limits=risk_limits
+                    )
+                    
+                    if decisions:
+                        for dec in decisions:
+                            if dec.get('action') not in ('hold', 'skip'):
+                                dec['source'] = 'openai_scalp'
+                                dec['style'] = 'scalp'
+                                dec['trigger_type'] = trigger.trigger_type  # PATCH v3.0
+                                scalp_decisions.append(dec)
                         
-                        self.logger.info(f"⚡ [AI MANAGER] Analisando SCALP para {symbol}...")
+                        # Registra chamada no budget
+                        self.ai_budget.register_openai_call(trigger.trigger_type, trigger.symbol, trigger.timeframe)
+                        self.ai_manager.register_scalp_call(trigger.symbol)
+                        triggers_processed_scalp += 1
                         
-                        # Filtra contexto apenas para este símbolo
-                        symbol_context = [ctx for ctx in market_contexts if ctx['symbol'] == symbol]
-                        
-                        if not symbol_context:
-                            continue
-                            
-                        try:
-                            decisions = self.ai_engine.scalp_engine.get_scalp_decision(
-                                market_contexts=symbol_context,
-                                account_info=account_info,
-                                open_positions=open_positions_list,
-                                risk_limits=risk_limits
-                            )
-                            
-                            if decisions:
-                                # Taggeia
-                                for dec in decisions:
-                                    if dec.get('action') not in ('hold', 'skip'):
-                                        dec['source'] = 'openai_scalp'
-                                        dec['style'] = 'scalp'
-                                        scalp_decisions.append(dec)
-                                    
-                                self.ai_manager.register_scalp_call(symbol)
-                                
-                        except Exception as e:
-                            self.logger.error(f"Erro ao chamar SCALP para {symbol}: {e}")
-                
-                # Atualiza cache
-                self.last_scalp_decisions = scalp_decisions
+                except Exception as e:
+                    self.logger.error(f"Erro ao chamar SCALP para {trigger.symbol}: {e}")
             
-            # Atualiza cache de scalp (opcional, pois scalp é pontual)
+            # Atualiza cache
             if scalp_decisions:
                 self.last_scalp_decisions = scalp_decisions
-            else:
-                # Limpa cache antigo se não houve novas decisões, para não repetir trades velhos
-                self.last_scalp_decisions = []
+        
+        # Se não houve triggers de scalp, limpa cache (scalp é pontual)
+        if not scalp_triggers:
+            self.last_scalp_decisions = []
+        # ========== FIM PATCH v3.0 ==========
         
         # Combina decisões de ambos os motores + gestão de posição
         management_decisions = [] # PATCH: Position Manager 2.0 roda separadamente, sem decisões misturadas aqui

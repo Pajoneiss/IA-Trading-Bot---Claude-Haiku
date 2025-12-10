@@ -1,0 +1,33 @@
+{
+    "enabled": true,
+    "daily_budget": {
+        "claude_max_calls": 12,
+        "openai_max_calls": 40
+    },
+    "cooldowns": {
+        "min_minutes_between_claude_calls": 60,
+        "min_minutes_between_openai_calls": 10
+    },
+    "swing": {
+        "symbols": ["BTC", "ETH"],
+        "timeframes": ["1d", "4h", "1h"]
+    },
+    "scalp": {
+        "symbols": ["BTC", "ETH", "SOL"],
+        "timeframes": ["4h", "1h", "30m"]
+    },
+    "scanner": {
+        "strong_move_atr_multiplier": 1.5,
+        "pullback_ema_distance_pct": 1.5,
+        "range_lookback_bars": 20,
+        "max_triggers_per_iteration": {
+            "swing": 3,
+            "scalp": 5
+        }
+    },
+    "logging": {
+        "log_prefix": "[AI BUDGET]",
+        "warn_when_reach_pct": 0.8,
+        "debug": false
+    }
+}
