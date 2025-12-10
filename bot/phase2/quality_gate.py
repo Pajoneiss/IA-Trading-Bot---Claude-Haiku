@@ -1,24 +1,82 @@
 """
 Phase 2 - Quality Gate
 Filtro rigoroso para sinais A+
+
+PATCH v2.0:
+- ModeQualityParams: parâmetros diferentes por modo (Conservador/Balanceado/Agressivo)
+- Penalização de confluência menos agressiva para Balanceado/Agressivo
+- Tratamento especial para daily EMA cross em swing trades
+- allow_high_rsi_on_daily_shift: permite RSI alto quando daily cross favorável
 """
 import logging
 from typing import Dict, Any, Optional, List
+from dataclasses import dataclass
 from bot.phase2.models import QualityGateResult
 
 logger = logging.getLogger(__name__)
+
+
+# ===== NOVO: Parâmetros por Modo =====
+@dataclass
+class ModeQualityParams:
+    """Parâmetros de Quality Gate por modo de trading"""
+    min_conf_swing: float
+    min_conf_scalp: float
+    min_confluences_swing: int
+    min_confluences_scalp: int
+    ema_alignment_weight: float
+    allow_high_rsi_on_daily_shift: bool
+    confluence_penalty_factor: float  # Quanto penalizar por confluência faltante
+
+
+# Parâmetros padrão por modo
+QUALITY_PARAMS = {
+    "CONSERVADOR": ModeQualityParams(
+        min_conf_swing=0.78,
+        min_conf_scalp=0.80,
+        min_confluences_swing=3,
+        min_confluences_scalp=3,
+        ema_alignment_weight=1.0,
+        allow_high_rsi_on_daily_shift=False,
+        confluence_penalty_factor=0.08,
+    ),
+    "BALANCEADO": ModeQualityParams(
+        min_conf_swing=0.72,
+        min_conf_scalp=0.74,
+        min_confluences_swing=2,
+        min_confluences_scalp=2,
+        ema_alignment_weight=0.8,
+        allow_high_rsi_on_daily_shift=True,
+        confluence_penalty_factor=0.05,
+    ),
+    "AGRESSIVO": ModeQualityParams(
+        min_conf_swing=0.68,
+        min_conf_scalp=0.70,
+        min_confluences_swing=1,
+        min_confluences_scalp=1,
+        ema_alignment_weight=0.6,
+        allow_high_rsi_on_daily_shift=True,
+        confluence_penalty_factor=0.03,
+    ),
+}
 
 
 class QualityGate:
     """
     Quality Gate - Filtro de sinais A+
     
+    PATCH v2.0:
+    - Parâmetros dinâmicos por modo
+    - Tratamento especial para daily EMA cross
+    - Penalização de confluência ajustada por modo
+    
     Critérios:
-    - Confidence >= 0.80
+    - Confidence >= threshold (varia por modo)
     - Estrutura macro coerente
     - Não entrar após vela gigante (>3%)
     - Não chase (vários candles atrasado)
     - Market Intelligence alignment
+    - EMA Timing + Daily Trend Shift
     """
     
     def __init__(self, config: Optional[Dict[str, Any]] = None, mode_manager=None):
@@ -50,6 +108,11 @@ class QualityGate:
         logger.info(f"[QUALITY GATE] Inicializado: mode={mode_str} | min_conf={self.min_confidence} | "
                    f"max_body={self.max_candle_body_pct}% | min_confluences={self.min_confluences}")
     
+    def _get_mode_params(self) -> ModeQualityParams:
+        """Retorna parâmetros do modo atual"""
+        mode_str = self.mode_manager.current_mode.value if self.mode_manager else "BALANCEADO"
+        return QUALITY_PARAMS.get(mode_str, QUALITY_PARAMS["BALANCEADO"])
+    
     def get_min_confidence(self, ai_type: str = 'swing') -> float:
         """
         Retorna confiança mínima considerando modo atual
@@ -70,6 +133,11 @@ class QualityGate:
         """
         Avalia se decisão passa no Quality Gate
         
+        PATCH v2.0:
+        - Usa parâmetros por modo
+        - Tratamento especial para daily EMA cross
+        - Penalização de confluência ajustada
+        
         Args:
             decision: Decisão da IA (já parseada)
             market_context: Contexto de mercado do símbolo
@@ -89,17 +157,30 @@ class QualityGate:
         
         symbol = decision.get('symbol', 'UNKNOWN')
         confidence = decision.get('confidence', 0.0)
-        ai_type = decision.get('style', 'swing')  # Determina se é swing ou scalp
+        ai_type = decision.get('style', 'swing')
+        
+        # Obtém parâmetros do modo
+        params = self._get_mode_params()
+        mode_str = self.mode_manager.current_mode.value if self.mode_manager else "N/A"
         
         # Obtém min_confidence dinâmico baseado no modo e tipo
         min_conf = self.get_min_confidence(ai_type)
-        mode_str = self.mode_manager.current_mode.value if self.mode_manager else "N/A"
         
         logger.info(f"[QUALITY GATE] Avaliando {symbol}: confidence={confidence:.2f} | mode={mode_str} | ai_type={ai_type} | min_conf={min_conf:.2f}")
         
+        # ===== EXTRAIR EMA CONTEXT PARA USO POSTERIOR =====
+        ema_context = market_context.get('ema_context') if market_context else None
+        daily_trend_shift = None
+        ema_alignment_score = 0.0
+        allow_high_rsi_override = False
+        
+        if ema_context:
+            daily_trend_shift = getattr(ema_context, 'daily_trend_shift', None)
+            ema_alignment_score = getattr(ema_context, 'alignment_score', 0.0)
+            allow_high_rsi_override = getattr(ema_context, 'allow_high_rsi_override', False)
+        
         # === CRITÉRIO 0: REGIME PERMITIDO POR MODO ===
         if self.mode_manager and market_context:
-            # Tenta obter regime do contexto
             regime = market_context.get('regime') or market_context.get('phase3', {}).get('regime')
             if regime:
                 if not self.mode_manager.is_regime_allowed_for_type(regime, ai_type):
@@ -122,43 +203,50 @@ class QualityGate:
             last_candle_change = self._check_last_candle_size(market_context)
             if last_candle_change and abs(last_candle_change) > self.max_candle_body_pct:
                 result.approved = False
-                result.confidence_score = confidence * 0.5  # Penaliza muito
+                result.confidence_score = confidence * 0.5
                 result.reasons.append(f"Vela gigante detectada: {last_candle_change:.1f}% > {self.max_candle_body_pct}%")
                 result.warnings.append("Possível chase após movimento explosivo")
                 logger.warning(f"[QUALITY GATE] ❌ {symbol} rejeitado: vela gigante {last_candle_change:.1f}%")
                 return result
         
-        # === CRITÉRIO 3: CONFLUÊNCIAS ===
+        # === CRITÉRIO 3: CONFLUÊNCIAS (AJUSTADO POR MODO) ===
         confluences = decision.get('confluences', [])
-        if len(confluences) < self.min_confluences:
-            # Não rejeita, mas penaliza confidence
-            penalty = 0.05 * (self.min_confluences - len(confluences))
+        min_confluences = params.min_confluences_swing if ai_type == 'swing' else params.min_confluences_scalp
+        
+        if len(confluences) < min_confluences:
+            # PATCH v2.0: Penalização ajustada por modo
+            missing = min_confluences - len(confluences)
+            penalty = params.confluence_penalty_factor * missing
             adjusted_conf = max(0.0, confidence - penalty)
             
-            result.warnings.append(f"Poucas confluências: {len(confluences)} < {self.min_confluences}")
+            result.warnings.append(f"Poucas confluências: {len(confluences)} < {min_confluences}")
             result.adjustments['confidence_penalty'] = penalty
             
-            # Se após penalidade cair abaixo do mínimo, rejeita
-            if adjusted_conf < min_conf:
-                result.approved = False
-                result.confidence_score = adjusted_conf
-                result.reasons.append(f"Confluence penalty levou confidence para {adjusted_conf:.2f}")
-                logger.warning(f"[QUALITY GATE] ❌ {symbol} rejeitado após confluence penalty")
-                return result
+            logger.info(f"[QUALITY GATE] Confluences={len(confluences)}/{min_confluences} (mode={mode_str}), applying penalty -{penalty:.2f}")
             
-            confidence = adjusted_conf
+            # Se após penalidade cair abaixo do mínimo, verifica se pode ser salvo pelo daily shift
+            if adjusted_conf < min_conf:
+                # PATCH v2.0: Se tiver daily trend shift favorável, pode passar mesmo assim
+                if self._check_daily_shift_override(decision, daily_trend_shift, ema_alignment_score, params, mode_str):
+                    logger.info(f"[QUALITY GATE][DAILY_EMA] Permitindo {symbol} apesar de confluências baixas - daily shift favorável")
+                    confidence = adjusted_conf + 0.05  # Pequeno boost
+                else:
+                    result.approved = False
+                    result.confidence_score = adjusted_conf
+                    result.reasons.append(f"Confluence penalty levou confidence para {adjusted_conf:.2f}")
+                    logger.warning(f"[QUALITY GATE] ❌ {symbol} rejeitado após confluence penalty")
+                    return result
+            else:
+                confidence = adjusted_conf
         
         # === CRITÉRIO 4: MARKET REGIME + ANTI-CHOP (PHASE 3) ===
-        # Integração da Phase 3 para filtrar regimes ruins
         try:
             from bot.phase3 import MarketRegimeAnalyzer, detect_chop
             
-            # Regime analysis (se tiver candles disponíveis)
             regime_info = None
             chop_info = None
             
             if market_context and hasattr(self, '_regime_analyzer'):
-                # Tenta pegar candles do contexto
                 candles_m15 = market_context.get('candles_15m', [])
                 candles_h1 = market_context.get('candles_h1', [])
                 
@@ -170,12 +258,10 @@ class QualityGate:
                         market_intel=market_intelligence
                     )
                     
-                    # Chop detection
                     chop_info = detect_chop(candles_m15, logger_instance=logger)
             
             # BLOQUEIA em PANIC_HIGH_VOL
             if regime_info and regime_info['regime'] == 'PANIC_HIGH_VOL':
-                # Só aprova se confidence muito alta E não aggressive
                 if confidence < 0.90 or decision.get('risk_profile') == 'AGGRESSIVE':
                     result.approved = False
                     result.confidence_score = confidence
@@ -185,36 +271,42 @@ class QualityGate:
                 else:
                     result.warnings.append("PANIC_HIGH_VOL mas confidence >= 0.90")
             
-            # BLOQUEIA em RANGE_CHOP ou CHOPPY
+            # BLOQUEIA em RANGE_CHOP ou CHOPPY - AJUSTADO POR MODO
             if (regime_info and regime_info['regime'] == 'RANGE_CHOP') or \
                (chop_info and chop_info['is_choppy']):
                 
                 chop_score = chop_info.get('chop_score', 0) if chop_info else 0.5
                 
-                # Exige confluências extras
-                if len(confluences) < 3:
-                    result.approved = False
-                    result.confidence_score = confidence
-                    result.reasons.append(f"RANGE_CHOP/Choppy (score={chop_score:.2f}) + poucas confluências ({len(confluences)} < 3)")
-                    logger.warning(f"[QUALITY GATE] ❌ {symbol} bloqueado: mercado sujo + poucas confluências")
-                    return result
+                # PATCH v2.0: Em Balanceado/Agressivo, só bloqueia se for chop MUITO alto
+                if mode_str == "CONSERVADOR":
+                    if len(confluences) < 3:
+                        result.approved = False
+                        result.confidence_score = confidence
+                        result.reasons.append(f"RANGE_CHOP/Choppy (score={chop_score:.2f}) + poucas confluências ({len(confluences)} < 3)")
+                        logger.warning(f"[QUALITY GATE] ❌ {symbol} bloqueado: mercado sujo + poucas confluências")
+                        return result
+                elif mode_str == "BALANCEADO":
+                    # Balanceado: só bloqueia se chop muito alto e poucas confluências
+                    if chop_score > 0.7 and len(confluences) < 2:
+                        result.approved = False
+                        result.confidence_score = confidence
+                        result.reasons.append(f"RANGE_CHOP alto (score={chop_score:.2f}) + confluências < 2")
+                        return result
+                # Agressivo: não bloqueia por chop em swing
                 
                 # Se scalp em chop, bloqueia
-                style = decision.get('style', 'swing')
-                if style == 'scalp':
+                if ai_type == 'scalp':
                     result.approved = False
                     result.confidence_score = confidence
                     result.reasons.append(f"Scalp bloqueado em CHOP (score={chop_score:.2f})")
                     logger.warning(f"[QUALITY GATE] ❌ {symbol} bloqueado: scalp em chop")
                     return result
                 
-                # Aviso mas permite passar se tiver confluências
-                result.warnings.append(f"Mercado choppy (score={chop_score:.2f}) mas tem {len(confluences)} confluências")
+                result.warnings.append(f"Mercado choppy (score={chop_score:.2f}) mas permitido no modo {mode_str}")
             
             # BLOQUEIA em LOW_VOL_DRIFT para scalps
             if regime_info and regime_info['regime'] == 'LOW_VOL_DRIFT':
-                style = decision.get('style', 'swing')
-                if style == 'scalp':
+                if ai_type == 'scalp':
                     result.approved = False
                     result.confidence_score = confidence
                     result.reasons.append("Scalp bloqueado em LOW_VOL_DRIFT")
@@ -223,10 +315,9 @@ class QualityGate:
             
             # RISK_OFF: ajusta confidence
             if regime_info and regime_info['risk_off']:
-                confidence *= 0.9  # Reduz 10%
+                confidence *= 0.9
                 result.warnings.append("risk_off ativo: confidence reduzida")
                 
-                # Eleva threshold temporariamente
                 temp_threshold = max(self.min_confidence, 0.88)
                 if confidence < temp_threshold:
                     result.approved = False
@@ -235,7 +326,6 @@ class QualityGate:
                     logger.warning(f"[QUALITY GATE] ❌ {symbol} bloqueado: risk_off + confidence insuficiente")
                     return result
             
-            # Log do regime (se disponível)
             if regime_info:
                 logger.debug(
                     f"[QUALITY GATE] {symbol} regime={regime_info['regime']}, "
@@ -243,18 +333,15 @@ class QualityGate:
                 )
         
         except ImportError:
-            # Phase 3 não disponível, continua normalmente
             logger.debug("[QUALITY GATE] Phase 3 não disponível, pulando regime check")
         except Exception as e:
-            # Erro na Phase 3, não quebra o Quality Gate
             logger.error(f"[QUALITY GATE] Erro na Phase 3: {e}")
         
-        # === CRITÉRIO 5 (original 4): MARKET INTELLIGENCE ===
+        # === CRITÉRIO 5: MARKET INTELLIGENCE ===
         if market_intelligence:
             mi_check = self._check_market_intelligence(decision, market_intelligence)
             
             if not mi_check['aligned']:
-                # Penaliza confiança
                 penalty = mi_check.get('penalty', 0.1)
                 confidence = max(0.0, confidence - penalty)
                 
@@ -268,7 +355,7 @@ class QualityGate:
                     logger.warning(f"[QUALITY GATE] ❌ {symbol} rejeitado por MI conflito")
                     return result
         
-        # === CRITÉRIO 6 (original 5): RISK PROFILE vs MARKET CONDITIONS ===
+        # === CRITÉRIO 6: RISK PROFILE vs MARKET CONDITIONS ===
         risk_profile = decision.get('risk_profile', 'BALANCED')
         if market_intelligence:
             profile_check = self._check_risk_profile_alignment(risk_profile, market_intelligence)
@@ -277,23 +364,29 @@ class QualityGate:
                 result.warnings.append(profile_check['reason'])
                 confidence *= profile_check.get('multiplier', 0.9)
                 
-        # === CRITÉRIO 7: EMA TIMING (Novo) ===
+        # === CRITÉRIO 7: EMA TIMING (PATCH v2.0) ===
         ema_timing = market_context.get('ema_timing') if market_context else None
-        
-        # Se não tem no contexto direto, tenta no objeto self do bot se estivesse acessível (mas não está fácil).
-        # Assume que foi passado em market_context['ema_timing'] pelo loop principal
         
         if ema_timing:
             if not self._check_ema_timing(decision, ema_timing):
-                # Se falhar no filtro EMA
-                mode_str = self.mode_manager.current_mode.value if self.mode_manager else "N/A"
-                result.approved = False
-                result.confidence_score = confidence
-                result.reasons.append(f"EMA Timing bloqueado para modo {mode_str} (score={ema_timing.get('score', 0):.2f})")
-                logger.warning(f"[QUALITY GATE] ❌ {symbol} rejeitado por EMA Timing ({mode_str})")
-                return result
+                # Antes de rejeitar, verifica se tem daily shift favorável
+                if self._check_daily_shift_override(decision, daily_trend_shift, ema_alignment_score, params, mode_str):
+                    logger.info(f"[QUALITY GATE][DAILY_EMA] Permitindo {symbol} apesar de EMA timing ruim - daily shift favorável")
+                else:
+                    result.approved = False
+                    result.confidence_score = confidence
+                    result.reasons.append(f"EMA Timing bloqueado para modo {mode_str} (score={ema_timing.get('score', 0):.2f})")
+                    logger.warning(f"[QUALITY GATE] ❌ {symbol} rejeitado por EMA Timing ({mode_str})")
+                    return result
             else:
                 logger.info(f"[QUALITY GATE] ✅ {symbol} aprovado no EMA Timing")
+
+        # === CRITÉRIO 8: DAILY TREND SHIFT ESPECIAL (NOVO) ===
+        if ai_type == 'swing' and self._check_daily_shift_for_swing(decision, daily_trend_shift, ema_alignment_score, params, mode_str, symbol):
+            # Trade já aprovado, apenas marca para gestão defensiva se RSI alto
+            if allow_high_rsi_override and params.allow_high_rsi_on_daily_shift:
+                result.adjustments['defensive_management'] = True
+                result.warnings.append("Daily shift favorável com RSI elevado - gestão defensiva ativada")
 
         # === APROVADO ===
         result.approved = True
@@ -306,6 +399,69 @@ class QualityGate:
         logger.info(f"[QUALITY GATE] ✅ {symbol} APROVADO: final_conf={confidence:.2f}")
         
         return result
+    
+    def _check_daily_shift_override(self, decision: Dict, daily_trend_shift: Optional[str], 
+                                     ema_alignment_score: float, params: ModeQualityParams, 
+                                     mode_str: str) -> bool:
+        """
+        Verifica se o daily trend shift pode fazer override de rejeição
+        
+        PATCH v2.0: Permite trades mesmo com confluências baixas se daily shift favorável
+        """
+        if not daily_trend_shift:
+            return False
+        
+        if not params.allow_high_rsi_on_daily_shift:
+            return False
+        
+        direction = decision.get('side', 'buy').lower()
+        if direction == 'buy':
+            direction = 'long'
+        elif direction == 'sell':
+            direction = 'short'
+        
+        # Verifica se daily shift está a favor
+        is_daily_in_favor = (
+            (direction == 'long' and daily_trend_shift == 'bull') or
+            (direction == 'short' and daily_trend_shift == 'bear')
+        )
+        
+        if is_daily_in_favor and ema_alignment_score >= 0.6:
+            return True
+        
+        return False
+    
+    def _check_daily_shift_for_swing(self, decision: Dict, daily_trend_shift: Optional[str],
+                                      ema_alignment_score: float, params: ModeQualityParams,
+                                      mode_str: str, symbol: str) -> bool:
+        """
+        Verifica e loga quando trade é aceito por daily shift
+        
+        PATCH v2.0: Log especial quando daily EMA cross aprova o trade
+        """
+        if not daily_trend_shift:
+            return False
+        
+        direction = decision.get('side', 'buy').lower()
+        if direction == 'buy':
+            direction = 'long'
+        elif direction == 'sell':
+            direction = 'short'
+        
+        is_daily_in_favor = (
+            (direction == 'long' and daily_trend_shift == 'bull') or
+            (direction == 'short' and daily_trend_shift == 'bear')
+        )
+        
+        if is_daily_in_favor and ema_alignment_score >= 0.6:
+            dir_str = "LONG" if direction == "long" else "SHORT"
+            logger.info(
+                f"[QUALITY GATE][DAILY_EMA] Swing {dir_str} em {symbol} aprovado com "
+                f"daily {daily_trend_shift} shift recente e alignment_score={ema_alignment_score:.2f} (mode={mode_str})."
+            )
+            return True
+        
+        return False
     
     def _check_last_candle_size(self, market_context: Dict[str, Any]) -> Optional[float]:
         """
@@ -410,11 +566,16 @@ class QualityGate:
     def _check_ema_timing(self, decision: Dict[str, Any], ema_timing: Dict[str, Any]) -> bool:
         """
         Verifica se o timing das EMAs está alinhado com o modo atual.
-        Usa dados ricos (is_fresh, is_overextended) injetados pelo EMACrossAnalyzer.
+        
+        PATCH v2.0: Usa apenas 30m, 1h, 4h, 1d (não mais 5m/15m)
         """
         try:
             mode = self.mode_manager.current_mode.value if self.mode_manager else "BALANCED"
             proposed_direction = decision.get('side', 'long').lower()
+            if proposed_direction == 'buy':
+                proposed_direction = 'long'
+            elif proposed_direction == 'sell':
+                proposed_direction = 'short'
             
             # Recupera dados
             score = ema_timing.get('score', 0)
@@ -424,76 +585,66 @@ class QualityGate:
             def get_st(tf):
                 st = states.get(tf)
                 if not st: return None
-                # Se for dict (novo formato rico) ou string (legado/fallback)
                 if isinstance(st, dict):
                     return st
-                return {"trend": st} # Fallback legacy
+                return {"trend": st}
 
+            s1d = get_st('1d')
             s4h = get_st('4h')
             s1h = get_st('1h')
-            s15m = get_st('15m')
-            s5m = get_st('5m')
+            s30m = get_st('30m')
 
             # --- CONSERVADOR ---
-            if mode == "CONSERVATIVE":
+            if mode == "CONSERVADOR" or mode == "CONSERVATIVE":
                 if score < 0.7: return False
                 
                 if proposed_direction == 'long':
-                    # 4h e 1h devem ser bull
                     if not (s4h and s4h.get('trend') == 'bull'): return False
                     if not (s1h and s1h.get('trend') == 'bull'): return False
+                    if not (s30m and s30m.get('trend') == 'bull'): return False
                     
-                    # 15m deve ser bull
-                    if not (s15m and s15m.get('trend') == 'bull'): return False
-                    
-                    # 1h e 15m não podem estar overextended
-                    if s1h.get('is_overextended'): return False
-                    if s15m.get('is_overextended'): return False
+                    if s1h and s1h.get('is_overextended'): return False
+                    if s30m and s30m.get('is_overextended'): return False
 
-                else: # short
+                else:
                     if not (s4h and s4h.get('trend') == 'bear'): return False
                     if not (s1h and s1h.get('trend') == 'bear'): return False
-                    if not (s15m and s15m.get('trend') == 'bear'): return False
+                    if not (s30m and s30m.get('trend') == 'bear'): return False
                     
-                    if s1h.get('is_overextended'): return False
-                    if s15m.get('is_overextended'): return False
+                    if s1h and s1h.get('is_overextended'): return False
+                    if s30m and s30m.get('is_overextended'): return False
                     
                 return True
 
             # --- BALANCEADO ---
-            elif mode == "BALANCED":
+            elif mode == "BALANCEADO" or mode == "BALANCED":
                 if score < 0.5: return False
                 
                 if proposed_direction == 'long':
-                    if s1h and s1h.get('trend') == 'bear': return False # Contra 1h não
-                    if s4h and s4h.get('trend') == 'bear': return False # Contra 4h não
-                    # Gatilho: 15m ou 5m bull
-                    has_trigger = (s15m and s15m.get('trend') == 'bull') or \
-                                  (s5m and s5m.get('trend') == 'bull')
+                    if s1h and s1h.get('trend') == 'bear': return False
+                    if s4h and s4h.get('trend') == 'bear': return False
+                    has_trigger = (s30m and s30m.get('trend') == 'bull') or \
+                                  (s1h and s1h.get('trend') == 'bull')
                     if not has_trigger: return False
                     
-                else: # short
+                else:
                     if s1h and s1h.get('trend') == 'bull': return False
                     if s4h and s4h.get('trend') == 'bull': return False
-                    has_trigger = (s15m and s15m.get('trend') == 'bear') or \
-                                  (s5m and s5m.get('trend') == 'bear')
+                    has_trigger = (s30m and s30m.get('trend') == 'bear') or \
+                                  (s1h and s1h.get('trend') == 'bear')
                     if not has_trigger: return False
                 
                 return True
 
             # --- AGRESSIVO ---
-            elif mode == "AGGRESSIVE":
-                # Permissivo, mas exige fresh cross se contra trend maior
+            elif mode == "AGRESSIVO" or mode == "AGGRESSIVE":
                 if proposed_direction == 'long':
                     if s1h and s1h.get('trend') == 'bear':
-                         # Se 1h contra, precisa fresh cross no 15m ou 5m
-                         has_fresh = (s15m and s15m.get('is_fresh') and s15m.get('last_cross') == 'bull') or \
-                                     (s5m and s5m.get('is_fresh') and s5m.get('last_cross') == 'bull')
+                         has_fresh = (s30m and s30m.get('is_fresh') and s30m.get('last_cross') == 'bull')
                          if not has_fresh: return False
                 else:
                     if s1h and s1h.get('trend') == 'bull':
-                         has_fresh = (s15m and s15m.get('is_fresh') and s15m.get('last_cross') == 'bear') or \
-                                     (s5m and s5m.get('is_fresh') and s5m.get('last_cross') == 'bear')
+                         has_fresh = (s30m and s30m.get('is_fresh') and s30m.get('last_cross') == 'bear')
                          if not has_fresh: return False
                 
                 if score < 0.3: return False 
@@ -503,7 +654,7 @@ class QualityGate:
             
         except Exception as e:
             logger.error(f"[QUALITY GATE] Erro ao checar EMA timing: {e}")
-            return True # Fail open para não travar produção por erro de lógica nova
+            return True
 
     def log_rejection(self, symbol: str, result: QualityGateResult):
         """Loga rejeição de forma clara"""

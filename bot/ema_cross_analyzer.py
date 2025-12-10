@@ -1,6 +1,12 @@
 """
 EMA Cross Analyzer - Multi-Timeframe Timing Intelligence
-Analisa EMAs 9/26 em múltiplos timeframes (4h, 1h, 15m, 5m) para identificar alinhamento e timing.
+Analisa EMAs 9/26 em múltiplos timeframes (1D, 4h, 1h, 30m) para identificar alinhamento e timing.
+
+PATCH v2.0:
+- Removido 5m/15m - apenas 30m para cima
+- Adicionado daily_trend_shift para detectar cruzamento no 1D
+- Score de alinhamento prioriza 1D + 4h
+- Novo campo allow_high_rsi_override para gestão defensiva
 """
 import logging
 import numpy as np
@@ -28,25 +34,47 @@ class EMAContext:
     has_bull_alignment: bool
     has_bear_alignment: bool
     best_direction: Optional[Literal["long", "short"]]
+    # NOVO: Detecta shift de tendência no diário
+    daily_trend_shift: Optional[Literal["bull", "bear"]] = None
+    # NOVO: Flag para gestão defensiva quando RSI alto mas daily shift favorável
+    allow_high_rsi_override: bool = False
 
 def default_ema_config():
+    """
+    Configuração padrão - SOMENTE 30m para cima (nada de 5m/15m)
+    """
     return {
-        "timeframes": ["4h", "1h", "15m", "5m"],
+        # SOMENTE 30m para cima – nada de 5m/15m
+        "timeframes": ["1d", "4h", "1h", "30m"],
         "ema_fast": 9,
         "ema_slow": 26,
-        "max_bars_lookback": 300,
-        # Critérios de recência (barras desde o último X para ser "fresh")
-        "fresh_cross_bars_4h": 3,
-        "fresh_cross_bars_1h": 5,
-        "fresh_cross_bars_15m": 8,
-        "fresh_cross_bars_5m": 12,
-        # Distância máxima do preço em relação às EMAs para não considerar 'overextended'
-        "max_price_distance_pct": 3.0
+        "max_bars_lookback": 500,
+
+        # Recência do cross por timeframe
+        "fresh_cross_bars": {
+            "1d": 3,    # cross diário recente ~últimos 3 candles
+            "4h": 5,
+            "1h": 8,
+            "30m": 12,
+        },
+
+        # Overextension máxima do preço vs EMAs
+        "max_price_distance_pct": {
+            "1d": 8.0,   # diário pode tolerar mais distância
+            "4h": 5.0,
+            "1h": 4.0,
+            "30m": 3.0,
+        }
     }
 
 class EMACrossAnalyzer:
     """
     Analisa EMAs 9/26 em múltiplos timeframes para fornecer inteligência de timing.
+    
+    PATCH v2.0:
+    - Apenas timeframes 30m, 1h, 4h, 1d
+    - Detecta daily_trend_shift para swing trades
+    - Score de alinhamento prioriza timeframes maiores
     """
     
     def __init__(self, market_client, logger_instance=None, config=None):
@@ -58,6 +86,8 @@ class EMACrossAnalyzer:
         self.cache = {}
         import time
         self._time = time
+        # Cooldown tracking
+        self._cooldowns = {}
 
     def analyze_symbol(self, symbol: str, prefetched_candles: Optional[Dict[str, List]] = None) -> Optional[EMAContext]:
         """
@@ -83,8 +113,6 @@ class EMACrossAnalyzer:
                     candles = self._fetch_candles(symbol, tf)
                 
                 if not candles:
-                    # Log menos verboso se for erro recorrente
-                    # self.log.warning(f"[EMA] Sem candles para {symbol} {tf}")
                     continue
                 
                 # Calcula estado
@@ -98,8 +126,8 @@ class EMACrossAnalyzer:
             # Gera contexto agregado
             context = self._aggregate_context(symbol, states)
             
-            # Log debug do resultado (reduzido para INFO apenas se mudar muito, ou DEBUG)
-            # self._log_analysis(context)
+            # Log compacto
+            self._log_analysis(context)
             
             return context
             
@@ -114,15 +142,11 @@ class EMACrossAnalyzer:
         now = self._time.time()
         
         # TTL por timeframe para reduzir requests
-        # 4h -> 5 min cache
-        # 1h -> 2 min cache
-        # 15m -> 1 min cache
-        # 5m -> 30s cache
         ttls = {
-            "4h": 300,
-            "1h": 120,
-            "15m": 60,
-            "5m": 30
+            "1d": 600,   # 10 min cache para diário
+            "4h": 300,   # 5 min cache
+            "1h": 120,   # 2 min cache
+            "30m": 60,   # 1 min cache
         }
         ttl = ttls.get(timeframe, 60)
         
@@ -130,16 +154,13 @@ class EMACrossAnalyzer:
         if cache_key in self.cache:
             entry = self.cache[cache_key]
             if now - entry["timestamp"] < ttl:
-                # Cache válido
                 return entry["data"]
         
         # 2. Busca API
         try:
-            # Assume que self.client tem get_candles(symbol, interval, limit)
             candles = self.client.get_candles(symbol, interval=timeframe, limit=limit)
             
             if candles:
-                # Atualiza Cache
                 self.cache[cache_key] = {
                     "data": candles,
                     "timestamp": now
@@ -169,10 +190,7 @@ class EMACrossAnalyzer:
         if len(closes) < ema_slow_period + 5:
             return None
             
-        # Calcula series EMA (usando numpy para eficiência se possível, ou loop)
-        # TechnicalIndicators.calculate_ema devolve float único atual.
-        # Precisamos da série histórica para achar o cruzamento.
-        
+        # Calcula series EMA
         ema_fast_series = self._calculate_ema_series(closes, ema_fast_period)
         ema_slow_series = self._calculate_ema_series(closes, ema_slow_period)
         
@@ -211,18 +229,24 @@ class EMACrossAnalyzer:
                 bars_since = (len(ema_fast_series) - 1) - (i + 1)
                 break
         
-        # Fresh Cross check
-        fresh_limit = self.config.get(f"fresh_cross_bars_{timeframe}", 5)
+        # Fresh Cross check - usando config por timeframe
+        fresh_cross_bars = self.config.get("fresh_cross_bars", {})
+        fresh_limit = fresh_cross_bars.get(timeframe, 5)
         is_fresh = False
         if bars_since is not None and bars_since <= fresh_limit:
             # Só é fresh se o cross for na direção da tendência atual
             if last_cross_dir == trend:
                 is_fresh = True
                 
-        # Overextended Check
-        # Distância % do preço para EMA21 (slow)
+        # Overextended Check - usando config por timeframe
+        max_distance_pct = self.config.get("max_price_distance_pct", {})
+        if isinstance(max_distance_pct, dict):
+            max_dist = max_distance_pct.get(timeframe, 3.0)
+        else:
+            max_dist = max_distance_pct
+            
         dist_pct = abs((current_price - current_slow) / current_slow) * 100
-        is_extended = dist_pct > self.config["max_price_distance_pct"]
+        is_extended = dist_pct > max_dist
         
         return EMATimeframeState(
             timeframe=timeframe,
@@ -254,60 +278,94 @@ class EMACrossAnalyzer:
     def _aggregate_context(self, symbol: str, states: Dict[str, EMATimeframeState]) -> EMAContext:
         """
         Analisa alinhamento entre timeframes e gera score.
+        
+        PATCH v2.0:
+        - Novo scoring focado em 1D + 4h + 1h + 30m
+        - Detecta daily_trend_shift
+        - Mais peso para timeframes maiores
         """
+        s1d = states.get("1d")
         s4h = states.get("4h")
         s1h = states.get("1h")
-        s15m = states.get("15m")
-        s5m = states.get("5m")
+        s30m = states.get("30m")
         
         # Defaults
         bull_score = 0.0
         bear_score = 0.0
+        daily_trend_shift = None
         
-        # Lógica de Pontuação BULL
-        if s4h and s4h.trend_direction == "bull":
-            bull_score += 0.3
-        if s1h and s1h.trend_direction == "bull":
-            bull_score += 0.3
-        if s15m:
-            if s15m.trend_direction == "bull":
-                bull_score += 0.2
-            if s15m.last_cross_direction == "bull" and s15m.is_fresh_cross:
-                bull_score += 0.2  # Bônus por fresh cross
-        if s5m and s5m.trend_direction == "bull" and s5m.is_fresh_cross:
-                bull_score += 0.1
+        # ===== DETECTAR DAILY TREND SHIFT =====
+        if s1d:
+            fresh_limit_1d = self.config.get("fresh_cross_bars", {}).get("1d", 3)
+            if s1d.last_cross_direction == "bull" and s1d.bars_since_last_cross is not None:
+                if s1d.bars_since_last_cross <= fresh_limit_1d:
+                    daily_trend_shift = "bull"
+            elif s1d.last_cross_direction == "bear" and s1d.bars_since_last_cross is not None:
+                if s1d.bars_since_last_cross <= fresh_limit_1d:
+                    daily_trend_shift = "bear"
+        
+        # ===== NOVO SCORING: Prioriza 1D + 4h =====
+        
+        # 1D e 4h na mesma direção → +0.4
+        if s1d and s4h:
+            if s1d.trend_direction == s4h.trend_direction and s1d.trend_direction != "flat":
+                if s1d.trend_direction == "bull":
+                    bull_score += 0.4
+                else:
+                    bear_score += 0.4
+        
+        # 4h e 1h na mesma direção → +0.3
+        if s4h and s1h:
+            if s4h.trend_direction == s1h.trend_direction and s4h.trend_direction != "flat":
+                if s4h.trend_direction == "bull":
+                    bull_score += 0.3
+                else:
+                    bear_score += 0.3
+        
+        # 1h e 30m na mesma direção → +0.2
+        if s1h and s30m:
+            if s1h.trend_direction == s30m.trend_direction and s1h.trend_direction != "flat":
+                if s1h.trend_direction == "bull":
+                    bull_score += 0.2
+                else:
+                    bear_score += 0.2
+        
+        # Fresh cross recente no maior timeframe relevante → +0.1
+        for st in [s1d, s4h, s1h, s30m]:
+            if st and st.is_fresh_cross:
+                if st.last_cross_direction == "bull":
+                    bull_score += 0.1
+                elif st.last_cross_direction == "bear":
+                    bear_score += 0.1
+                break  # Só conta o maior
                 
-        # Lógica de Pontuação BEAR
-        if s4h and s4h.trend_direction == "bear":
-            bear_score += 0.3
-        if s1h and s1h.trend_direction == "bear":
-            bear_score += 0.3
-        if s15m:
-            if s15m.trend_direction == "bear":
-                bear_score += 0.2
-            if s15m.last_cross_direction == "bear" and s15m.is_fresh_cross:
-                bear_score += 0.2
-        if s5m and s5m.trend_direction == "bear" and s5m.is_fresh_cross:
-                bear_score += 0.1
-                
-        # Penaliza Overextension
-        for st in [s15m, s1h]:
+        # Penaliza Overextension (leve)
+        for st in [s1h, s30m]:
             if st and st.is_overextended:
-                bull_score *= 0.8
-                bear_score *= 0.8
+                bull_score *= 0.9
+                bear_score *= 0.9
                 
         # Determina melhor direção
         best_dir = None
         alignment_score = 0.0
         
+        # Clamp em [0, 1]
+        bull_score = min(1.0, max(0.0, bull_score))
+        bear_score = min(1.0, max(0.0, bear_score))
+        
         if bull_score > bear_score:
-            alignment_score = min(1.0, bull_score)
-            if alignment_score > 0.4:
+            alignment_score = bull_score
+            if alignment_score > 0.3:
                 best_dir = "long"
         elif bear_score > bull_score:
-            alignment_score = min(1.0, bear_score)
-            if alignment_score > 0.4:
+            alignment_score = bear_score
+            if alignment_score > 0.3:
                 best_dir = "short"
+        
+        # Flag para override de RSI alto quando daily shift favorável
+        allow_high_rsi = False
+        if daily_trend_shift and alignment_score >= 0.6:
+            allow_high_rsi = True
         
         return EMAContext(
             symbol=symbol,
@@ -315,15 +373,17 @@ class EMACrossAnalyzer:
             alignment_score=alignment_score,
             has_bull_alignment=bull_score >= 0.6,
             has_bear_alignment=bear_score >= 0.6,
-            best_direction=best_dir
+            best_direction=best_dir,
+            daily_trend_shift=daily_trend_shift,
+            allow_high_rsi_override=allow_high_rsi
         )
 
     def _log_analysis(self, ctx: EMAContext):
-        """Log compacto para debug"""
+        """Log compacto para debug - PATCH v2.0"""
+        s1d = ctx.states.get("1d")
         s4h = ctx.states.get("4h")
         s1h = ctx.states.get("1h")
-        s15m = ctx.states.get("15m")
-        s5m = ctx.states.get("5m")
+        s30m = ctx.states.get("30m")
         
         def fmt(s): 
             if not s: return "N/A"
@@ -332,19 +392,9 @@ class EMACrossAnalyzer:
             return f"{s.trend_direction.upper()}({cross_info}{fresh})"
 
         self.log.debug(
-            f"[EMA] {ctx.symbol} | Score: {ctx.alignment_score:.2f} ({ctx.best_direction or 'None'}) | "
-            f"4h={fmt(s4h)} 1h={fmt(s1h)} 15m={fmt(s15m)} 5m={fmt(s5m)}"
+            f"[EMA] {ctx.symbol} 1d={fmt(s1d)} 4h={fmt(s4h)} 1h={fmt(s1h)} 30m={fmt(s30m)} "
+            f"daily_shift={ctx.daily_trend_shift} score={ctx.alignment_score:.2f}"
         )
-
-        # Cooldown tracking: { "symbol_tf": last_trigger_bar_index }
-        # Como não temos index de barra fácil aqui, usaremos timestamp aproximado ou contador de update
-        self._cooldowns = {} 
-
-    def analyze_symbol(self, symbol: str, prefetched_candles: Optional[Dict[str, List]] = None) -> Optional[EMAContext]:
-        # ... exists ...
-        pass
-
-    # ... (existing methods) ...
 
     def check_cooldown(self, symbol: str, timeframe: str, direction: str) -> bool:
         """
@@ -354,18 +404,18 @@ class EMACrossAnalyzer:
         key = f"{symbol}_{timeframe}_{direction}"
         last_time = self._cooldowns.get(key, 0)
         
-        # Cooldown de tempo simples (ex: 15 min para 5m, 45 min para 15m)
-        # Aproximação de "barras" usando tempo real
         import time
         now = time.time()
         
-        # Configuração de cooldown em segundos (aprox barras * segundos)
-        # 5m * 8 barras = 40 min
-        # 15m * 4 barras = 60 min
+        # Configuração de cooldown em segundos
+        # 30m * 6 barras = 180 min = 3h
+        # 1h * 3 barras = 180 min = 3h
+        # 4h * 2 barras = 480 min = 8h
         cooldown_duration = 0
-        if timeframe == "5m": cooldown_duration = 5 * 60 * 8 # 8 barras
-        elif timeframe == "15m": cooldown_duration = 15 * 60 * 4 # 4 barras
-        elif timeframe == "1h": cooldown_duration = 60 * 60 * 2 # 2 barras
+        if timeframe == "30m": cooldown_duration = 30 * 60 * 6
+        elif timeframe == "1h": cooldown_duration = 60 * 60 * 3
+        elif timeframe == "4h": cooldown_duration = 4 * 60 * 60 * 2
+        elif timeframe == "1d": cooldown_duration = 24 * 60 * 60  # 1 dia
         
         if now - last_time < cooldown_duration:
             return True
@@ -386,25 +436,66 @@ class EMACrossAnalyzer:
         """
         Aplica regras de timing baseadas no modo.
         Retorna True se aprovado, False se bloqueado.
+        
+        PATCH v2.0:
+        - Não usa mais 5m/15m
+        - Para SCALP, EMA é apenas consultivo (não bloqueia)
+        - Para SWING, considera daily_trend_shift
         """
         if not ema_context:
             return True 
         
         # Extrai states
+        s1d = ema_context.states.get("1d")
         s4h = ema_context.states.get("4h")
         s1h = ema_context.states.get("1h")
-        s15m = ema_context.states.get("15m")
-        s5m = ema_context.states.get("5m")
+        s30m = ema_context.states.get("30m")
         
-        # Helper logs
-        def log_block(reason):
-            # self.log.debug(f"[EMA FILTER] Bloqueado ({mode}): {reason}")
-            pass
-
+        # ===== SCALP: EMA apenas consultivo, não bloqueia =====
+        if style == "scalp":
+            return self._ema_timing_filter_scalp(mode, ema_context, proposed_direction, s4h, s1h, s30m)
+        
+        # ===== SWING: Regras por modo =====
+        return self._ema_timing_filter_swing(mode, ema_context, proposed_direction, s1d, s4h, s1h, s30m)
+    
+    def _ema_timing_filter_scalp(self, mode: str, ema_context: EMAContext, 
+                                  proposed_direction: str, s4h, s1h, s30m) -> bool:
+        """
+        Filtro EMA para SCALP - apenas consultivo.
+        
+        PATCH v2.0:
+        - NÃO usa 5m/15m
+        - Só evita operar TOTALMENTE contra tendência forte de 4h/1h
+        - Para Balanceado/Agressivo, EMA é apenas orientação
+        """
+        # Só bloquear se estiver MUITO contra mesmo
+        if ema_context.alignment_score < 0.2:
+            # Determinar se está contra a direção proposta
+            is_against = False
+            if proposed_direction == "long":
+                if s4h and s4h.trend_direction == "bear" and s1h and s1h.trend_direction == "bear":
+                    is_against = True
+            else:
+                if s4h and s4h.trend_direction == "bull" and s1h and s1h.trend_direction == "bull":
+                    is_against = True
+            
+            if is_against and mode == "CONSERVATIVE":
+                self.log.info(f"[QUALITY GATE][EMA][SCALP] Bloqueando scalp contra alinhamento extremamente fraco.")
+                return False
+        
+        # Para Balanceado/Agressivo, EMA é apenas orientação, não bloqueio duro
+        self.log.debug(f"[QUALITY GATE][EMA][SCALP] EMA apenas consultivo (30m+); não bloqueando.")
+        return True
+    
+    def _ema_timing_filter_swing(self, mode: str, ema_context: EMAContext,
+                                  proposed_direction: str, s1d, s4h, s1h, s30m) -> bool:
+        """
+        Filtro EMA para SWING por modo.
+        """
         # --- REGRAS CONSERVADOR ---
         if mode == "CONSERVATIVE":
             if ema_context.alignment_score < 0.7: 
-                log_block("Score < 0.7")
+                self.log.debug(f"[EMA FILTER] Bloqueado (CONSERVATIVE): Score < 0.7")
                 return False
                 
             if proposed_direction == "long":
@@ -412,23 +503,20 @@ class EMACrossAnalyzer:
                 if not (s4h and s4h.trend_direction == "bull"): return False
                 if not (s1h and s1h.trend_direction == "bull"): return False
                 
-                # 15m: deve ter fresh cross OU estar bull sem ser overextended
-                # Spec: "15m com last_cross_direction na mesma direção e is_fresh_cross=True"
-                # Mas se já cruzou há muito tempo e é tendência forte? 
-                # Vamos seguir a spec estrita para "entrada no timing": exige fresh cross ou pullback recentissimo
-                if not (s15m and s15m.trend_direction == "bull"): return False
+                # 30m deve estar bull
+                if not (s30m and s30m.trend_direction == "bull"): return False
                 
                 # Check Overextended
                 if s1h and s1h.is_overextended: return False
-                if s15m and s15m.is_overextended: return False
+                if s30m and s30m.is_overextended: return False
 
             else: # short
                 if not (s4h and s4h.trend_direction == "bear"): return False
                 if not (s1h and s1h.trend_direction == "bear"): return False
-                if not (s15m and s15m.trend_direction == "bear"): return False
+                if not (s30m and s30m.trend_direction == "bear"): return False
                 
                 if s1h and s1h.is_overextended: return False
-                if s15m and s15m.is_overextended: return False
+                if s30m and s30m.is_overextended: return False
             
             return True
 
@@ -437,33 +525,35 @@ class EMACrossAnalyzer:
             if ema_context.alignment_score < 0.5: return False
             
             if proposed_direction == "long":
-                if s1h and s1h.trend_direction == "bear": return False # Contra 1h não
-                if s4h and s4h.trend_direction == "bear": return False # Contra 4h não
+                if s1h and s1h.trend_direction == "bear": return False
+                if s4h and s4h.trend_direction == "bear": return False
                 
-                # 15m deve estar a favor
-                if not (s15m and s15m.trend_direction == "bull"): return False
+                # Gatilho: 30m ou 1h bull
+                has_trigger = (s30m and s30m.trend_direction == "bull") or \
+                              (s1h and s1h.trend_direction == "bull")
+                if not has_trigger: return False
                 
             else: # short
                 if s1h and s1h.trend_direction == "bull": return False
                 if s4h and s4h.trend_direction == "bull": return False
-                if not (s15m and s15m.trend_direction == "bear"): return False
+                has_trigger = (s30m and s30m.trend_direction == "bear") or \
+                              (s1h and s1h.trend_direction == "bear")
+                if not has_trigger: return False
 
             return True
 
         # --- REGRAS AGRESSIVO ---
         elif mode == "AGGRESSIVE":
-            # Permite operar contra 4h se tiver setup claro em LTF
+            # Permissivo, mas exige fresh cross se contra trend maior
             if proposed_direction == "long":
                 if s1h and s1h.trend_direction == "bear":
-                    # Se 1h é contra, exige fresh cross no 15m ou 5m
-                    has_fresh = (s15m and s15m.is_fresh_cross and s15m.last_cross_direction == "bull") or \
-                               (s5m and s5m.is_fresh_cross and s5m.last_cross_direction == "bull")
+                    # Se 1h é contra, precisa fresh cross no 30m
+                    has_fresh = (s30m and s30m.is_fresh_cross and s30m.last_cross_direction == "bull")
                     if not has_fresh:
                         return False
             else:
                 if s1h and s1h.trend_direction == "bull":
-                     has_fresh = (s15m and s15m.is_fresh_cross and s15m.last_cross_direction == "bear") or \
-                               (s5m and s5m.is_fresh_cross and s5m.last_cross_direction == "bear")
+                     has_fresh = (s30m and s30m.is_fresh_cross and s30m.last_cross_direction == "bear")
                      if not has_fresh:
                         return False
             
