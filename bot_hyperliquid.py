@@ -587,6 +587,12 @@ class HyperliquidBot:
         self.logger.info(f"[PATCH v3.0] AI Budget + Scanner inicializados")
         self.logger.info(self.ai_budget.get_status_summary())
         # ============================================================
+        
+        # ========== PATCH: EXECUTION MANAGER (Phase 8) ==========
+        from bot.phase8.execution_manager import ExecutionManager
+        self.execution_manager = ExecutionManager(logger_instance=self.logger)
+        self.logger.info(f"[EXECUTION] Modo inicial: {self.execution_manager.execution_mode.value}")
+        # ========================================================
     
     def _is_on_cooldown(self, symbol: str) -> bool:
         """Verifica se o ativo está em cooldown"""

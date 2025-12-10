@@ -210,6 +210,14 @@ class TelegramInteractivePRO:
             except Exception as e:
                 logger.error(f"[TELEGRAM] Erro em Risco: {e}")
         
+        # PATCH: Handler do botão Execução
+        @self.bot.message_handler(func=lambda m: m.text and m.text == "⚙️ Execução")
+        def handle_execucao_button(message):
+            try:
+                self._send_execution_menu(message.chat.id, user_id=message.from_user.id)
+            except Exception as e:
+                logger.error(f"[TELEGRAM] Erro em Execução: {e}")
+        
         # === PHASE 4: COMANDOS DE PERFORMANCE ===
         @self.bot.message_handler(commands=['pnl'])
         def handle_pnl_command(message):
@@ -275,10 +283,10 @@ class TelegramInteractivePRO:
                 logger.error(f"[TELEGRAM] Erro no comando /coach: {e}")
         
         # === PHASE 8: COMANDOS DE PAPER TRADING ===
-        @self.bot.message_handler(commands=['execution', 'exec'])
+        @self.bot.message_handler(commands=['execution', 'exec', 'execucao'])
         def handle_execution_command(message):
             try:
-                self._send_execution_menu(message.chat.id)
+                self._send_execution_menu(message.chat.id, user_id=message.from_user.id)
             except Exception as e:
                 logger.error(f"[TELEGRAM] Erro no comando /execution: {e}")
         
@@ -319,11 +327,11 @@ class TelegramInteractivePRO:
                 
                 # Phase 8: Callbacks de execution mode
                 elif call.data == "exec_mode_live":
-                    self._set_execution_mode(call.message.chat.id, "LIVE")
+                    self._set_execution_mode(call.message.chat.id, "LIVE", user_id=call.from_user.id)
                 elif call.data == "exec_mode_paper":
-                    self._set_execution_mode(call.message.chat.id, "PAPER_ONLY")
+                    self._set_execution_mode(call.message.chat.id, "PAPER_ONLY", user_id=call.from_user.id)
                 elif call.data == "exec_mode_shadow":
-                    self._set_execution_mode(call.message.chat.id, "SHADOW")
+                    self._set_execution_mode(call.message.chat.id, "SHADOW", user_id=call.from_user.id)
                     
                 self.bot.answer_callback_query(call.id)
             except Exception as e:
@@ -332,7 +340,7 @@ class TelegramInteractivePRO:
     # ========== TECLADO PERMANENTE ==========
     
     def _get_persistent_keyboard(self):
-        """Teclado com 9 botões sempre visível"""
+        """Teclado com 12 botões sempre visível"""
         is_paused = getattr(self.main_bot, 'paused', False)
         pause_text = "▶️ Retomar" if is_paused else "⏸️ Pausar"
         
@@ -357,6 +365,11 @@ class TelegramInteractivePRO:
             types.KeyboardButton("📰 Notícias"),
             types.KeyboardButton("💹 Mercado"),
             types.KeyboardButton("🛡 Risco")  # Phase 6: Botão de Risco
+        )
+        
+        # Linha 4: Execução (NOVO)
+        keyboard.row(
+            types.KeyboardButton("⚙️ Execução")  # PATCH: Botão de modo de execução
         )
         
         return keyboard
@@ -401,9 +414,26 @@ class TelegramInteractivePRO:
             pnl_hoje = dd * equity / 100  # Aproximação
             pnl_hoje_pct = dd
             
+            # PATCH: Obter modo de execução
+            exec_mode_str = "LIVE"
+            exec_mode_emoji = "🟢"
+            exec_manager = getattr(self.main_bot, 'execution_manager', None)
+            if exec_manager:
+                try:
+                    exec_mode_str = exec_manager.execution_mode.value
+                    if exec_mode_str == "LIVE":
+                        exec_mode_emoji = "🟢"
+                    elif exec_mode_str == "PAPER_ONLY":
+                        exec_mode_emoji = "📝"
+                    else:  # SHADOW
+                        exec_mode_emoji = "👥"
+                except:
+                    pass
+            
             msg = (
                 f"📊 *RESUMO DO BOT*\n\n"
                 f"Status: {status_emoji}\n"
+                f"Execução: {exec_mode_emoji} `{exec_mode_str}`\n"
                 f"💰 Equity: `${equity:.2f}`\n"
                 f"📈 PnL Hoje: `${pnl_hoje:+.2f}` ({pnl_hoje_pct:+.2f}%)\n"
                 f"📊 Posições Abertas: `{pos_count}`\n\n"
@@ -1852,9 +1882,21 @@ class TelegramInteractivePRO:
     
     # ========== PHASE 8: PAPER TRADING & SHADOW MODE ==========
     
-    def _send_execution_menu(self, chat_id: int):
-        """Envia menu de execução"""
+    def _send_execution_menu(self, chat_id: int, user_id: int = None):
+        """Envia menu de execução com verificação de permissão"""
         try:
+            # PATCH: Verificação de permissão
+            allowed_chat_id = os.getenv('TELEGRAM_CHAT_ID')
+            if allowed_chat_id:
+                try:
+                    allowed_chat_id = int(allowed_chat_id)
+                    if chat_id != allowed_chat_id:
+                        self.bot.send_message(chat_id, "⛔ Você não tem permissão para acessar este menu.", parse_mode=None)
+                        logger.warning(f"[EXECUTION_MODE] Acesso negado para chat_id={chat_id}")
+                        return
+                except ValueError:
+                    pass
+            
             exec_manager = getattr(self.main_bot, 'execution_manager', None)
             if not exec_manager:
                 self.bot.send_message(chat_id, "⚠️ Execution Manager não disponível", parse_mode=None)
@@ -1863,61 +1905,97 @@ class TelegramInteractivePRO:
             status = exec_manager.get_status()
             current_mode = status['mode']
             
-            msg = "⚙️ MODO DE EXECUÇÃO\n"
-            msg += "=" * 30 + "\n\n"
-            msg += f"Estado atual: {current_mode}\n\n"
-            msg += "• LIVE — Envia ordens reais\n"
-            msg += "• PAPER_ONLY — Apenas simula\n"
-            msg += "• SHADOW — Live + experimentos paper\n\n"
-            msg += "Escolha:"
+            # Descrições dos modos
+            mode_desc = {
+                "LIVE": "🟢 Ordens reais na Hyperliquid",
+                "PAPER_ONLY": "📝 Apenas simulação (sem ordens reais)",
+                "SHADOW": "👥 Ordens reais + experimentos paper"
+            }
+            
+            msg = "⚙️ *MODO DE EXECUÇÃO*\n"
+            msg += "━" * 28 + "\n\n"
+            msg += f"*Estado atual:* `{current_mode}`\n"
+            msg += f"{mode_desc.get(current_mode, '')}\n\n"
+            msg += "━" * 28 + "\n"
+            msg += "*Modos disponíveis:*\n\n"
+            msg += "🟢 *LIVE* — Envia ordens reais\n"
+            msg += "📝 *PAPER* — Apenas simula\n"
+            msg += "👥 *SHADOW* — Live + paper paralelo\n\n"
+            msg += "Selecione um modo:"
             
             from telebot import types
             markup = types.InlineKeyboardMarkup(row_width=3)
             
+            # Botões com indicação visual do modo ativo
             btn_live = types.InlineKeyboardButton(
-                text="🟢 LIVE" if current_mode == "LIVE" else "LIVE",
+                text="✅ LIVE" if current_mode == "LIVE" else "LIVE",
                 callback_data="exec_mode_live"
             )
             btn_paper = types.InlineKeyboardButton(
-                text="📝 PAPER" if current_mode == "PAPER_ONLY" else "PAPER",
+                text="✅ PAPER" if current_mode == "PAPER_ONLY" else "PAPER",
                 callback_data="exec_mode_paper"
             )
             btn_shadow = types.InlineKeyboardButton(
-                text="👥 SHADOW" if current_mode == "SHADOW" else "SHADOW",
+                text="✅ SHADOW" if current_mode == "SHADOW" else "SHADOW",
                 callback_data="exec_mode_shadow"
             )
             
             markup.add(btn_live, btn_paper, btn_shadow)
             
-            self.bot.send_message(chat_id, msg, reply_markup=markup, parse_mode=None)
+            self.bot.send_message(chat_id, msg, reply_markup=markup)
+            logger.info(f"[EXECUTION_MODE] Menu exibido para chat_id={chat_id}, modo atual={current_mode}")
             
         except Exception as e:
             logger.error(f"[TELEGRAM] Erro ao enviar execution menu: {e}")
             self.bot.send_message(chat_id, f"❌ Erro: {str(e)[:100]}", parse_mode=None)
     
-    def _set_execution_mode(self, chat_id: int, mode: str):
-        """Altera modo de execução"""
+    def _set_execution_mode(self, chat_id: int, mode: str, user_id: int = None):
+        """Altera modo de execução com verificação de permissão"""
         try:
+            # PATCH: Verificação de permissão
+            allowed_chat_id = os.getenv('TELEGRAM_CHAT_ID')
+            if allowed_chat_id:
+                try:
+                    allowed_chat_id = int(allowed_chat_id)
+                    if chat_id != allowed_chat_id:
+                        self.bot.send_message(chat_id, "⛔ Você não tem permissão para alterar o modo de execução.", parse_mode=None)
+                        logger.warning(f"[EXECUTION_MODE] Tentativa de alteração negada para chat_id={chat_id}, user_id={user_id}")
+                        return
+                except ValueError:
+                    pass
+            
             exec_manager = getattr(self.main_bot, 'execution_manager', None)
             if not exec_manager:
                 self.bot.send_message(chat_id, "⚠️ Execution Manager não disponível", parse_mode=None)
                 return
             
+            # Obtém modo anterior para log
+            old_mode = exec_manager.execution_mode.value
+            
             from bot.phase8.execution_config import ExecutionMode
             new_mode = ExecutionMode[mode]
             
-            success = exec_manager.set_mode(new_mode, source="telegram")
+            success = exec_manager.set_mode(new_mode, source=f"telegram_user_{user_id or chat_id}")
             
             if success:
-                msg = f"✅ Modo alterado para {mode}\n\n"
-                if mode == "LIVE":
-                    msg += "Bot enviará ordens REAIS"
-                elif mode == "PAPER_ONLY":
-                    msg += "Bot NÃO enviará ordens reais. Apenas simulação."
-                else:
-                    msg += "Bot enviará ordens reais + experimentos paper"
+                # Log detalhado
+                logger.info(f"[EXECUTION_MODE] Alterado de {old_mode} para {mode} por user_id={user_id or chat_id}")
                 
-                self.bot.send_message(chat_id, msg, parse_mode=None)
+                msg = f"✅ *Modo de execução alterado*\n\n"
+                msg += f"*Anterior:* `{old_mode}`\n"
+                msg += f"*Novo:* `{mode}`\n\n"
+                
+                if mode == "LIVE":
+                    msg += "⚠️ *ATENÇÃO:* O bot enviará ordens REAIS na Hyperliquid!"
+                elif mode == "PAPER_ONLY":
+                    msg += "📝 O bot NÃO enviará ordens reais. Apenas simulação."
+                else:  # SHADOW
+                    msg += "👥 O bot enviará ordens reais + experimentos paper em paralelo."
+                
+                self.bot.send_message(chat_id, msg)
+                
+                # Reenvia menu atualizado
+                self._send_execution_menu(chat_id, user_id)
             else:
                 self.bot.send_message(chat_id, "❌ Erro ao alterar modo", parse_mode=None)
                 
