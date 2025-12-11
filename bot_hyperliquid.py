@@ -995,6 +995,49 @@ class HyperliquidBot:
                     self.last_ema_contexts[pair] = ema_ctx
                 # ================================================
                 
+                # ========== [Claude Trend Refactor] REGIME INFO ==========
+                # Calcula regime e trend_bias para usar em filtros e IA
+                try:
+                    from bot.phase3 import MarketRegimeAnalyzer
+                    
+                    if not hasattr(self, '_regime_analyzer'):
+                        self._regime_analyzer = MarketRegimeAnalyzer(logger_instance=self.logger)
+                    
+                    # Busca candles 15m para análise de regime
+                    candles_15m = self._fetch_candles_cached(pair, interval="15m", limit=100)
+                    
+                    # Usa candles 1h já carregados
+                    candles_h1 = normalized_candles if normalized_candles else []
+                    
+                    if candles_15m and candles_h1:
+                        # Normaliza 15m também
+                        candles_15m_norm = self.technical_analysis.normalize_candles(candles_15m, logger_instance=self.logger)
+                        
+                        regime_info = self._regime_analyzer.evaluate(
+                            symbol=pair,
+                            candles_m15=candles_15m_norm or [],
+                            candles_h1=candles_h1,
+                            market_intel=None  # TODO: integrar market intelligence
+                        )
+                        
+                        context['regime_info'] = regime_info
+                        context['trend_bias'] = regime_info.get('trend_bias', 'neutral')
+                        
+                        self.logger.info(
+                            f"[REGIME] {pair}: regime={regime_info.get('regime')}, "
+                            f"trend_bias={regime_info.get('trend_bias')}, "
+                            f"volatility={regime_info.get('volatility')}"
+                        )
+                    else:
+                        context['regime_info'] = {'regime': 'RANGE_CHOP', 'trend_bias': 'neutral'}
+                        context['trend_bias'] = 'neutral'
+                        
+                except Exception as e:
+                    self.logger.error(f"[REGIME] Erro ao calcular regime para {pair}: {e}")
+                    context['regime_info'] = {'regime': 'RANGE_CHOP', 'trend_bias': 'neutral'}
+                    context['trend_bias'] = 'neutral'
+                # =========================================================
+                
                 market_contexts.append(context)
                 
             except Exception as e:
@@ -1032,6 +1075,9 @@ class HyperliquidBot:
             try:
                 current_price = float(current_price)
                 
+                # [Claude Trend Refactor] Obtém regime_info do contexto
+                regime_info = symbol_context.get('regime_info', {})
+                
                 # CHAMA O POSITION MANAGER
                 actions = self.position_manager.manage_position(
                     symbol=symbol,
@@ -1039,6 +1085,43 @@ class HyperliquidBot:
                     current_mode=current_mode,
                     market_context=symbol_context
                 )
+                
+                # [Claude Trend Refactor] Verifica oportunidade de PYRAMIDING
+                mode_str = current_mode.value if hasattr(current_mode, 'value') else str(current_mode)
+                pyramid_check = self.position_manager.check_pyramid_opportunity(
+                    symbol=symbol,
+                    current_price=current_price,
+                    regime_info=regime_info,
+                    mode=mode_str
+                )
+                
+                if pyramid_check.get('allowed'):
+                    self.logger.info(f"[PYRAMID] ✅ {symbol}: Oportunidade de add detectada! {pyramid_check.get('reason')}")
+                    # Adiciona ação de pyramid à lista (será executada abaixo)
+                    actions.append({
+                        'action': 'pyramid_add',
+                        'symbol': symbol,
+                        'size_pct': pyramid_check.get('suggested_size_pct', 0.3),
+                        'reason': pyramid_check.get('reason')
+                    })
+                
+                # [Claude Trend Refactor] Verifica TRAILING STOP avançado
+                position = self.position_manager.get_position(symbol)
+                if position and position.trade_state.value == 'PROMOTED_TO_SWING':
+                    trailing_result = self.position_manager.calculate_trailing_stop(
+                        symbol=symbol,
+                        current_price=current_price,
+                        market_context=symbol_context,
+                        trailing_type="EMA"  # Pode ser "EMA", "ATR" ou "STRUCTURE"
+                    )
+                    
+                    if trailing_result.get('new_stop'):
+                        actions.append({
+                            'action': 'update_stop',
+                            'symbol': symbol,
+                            'price': trailing_result['new_stop'],
+                            'reason': trailing_result.get('reason', 'trailing_advanced')
+                        })
                 
                 # Executa ações retornadas
                 for action in actions:
@@ -1051,6 +1134,11 @@ class HyperliquidBot:
                         percent = action.get('percent', 0.0)
                         if percent > 0:
                             self._execute_partial_close(symbol, percent, reason)
+                    
+                    # [Claude Trend Refactor] Executa pyramid add
+                    elif act_type == 'pyramid_add':
+                        size_pct = action.get('size_pct', 0.3)
+                        self._execute_pyramid_add(symbol, size_pct, current_price, reason)
                             
                     elif act_type == 'update_stop':
                         new_price = action.get('price')
@@ -1104,17 +1192,61 @@ class HyperliquidBot:
         # Log status do orçamento
         self.logger.info(self.ai_budget.get_status_summary())
         
+        # [Claude Trend Refactor] Constrói dict de regime_info por símbolo
+        regime_info_by_symbol = {}
+        for ctx in market_contexts:
+            symbol = ctx.get('symbol')
+            if symbol and 'regime_info' in ctx:
+                regime_info_by_symbol[symbol] = ctx['regime_info']
+        
         # 6.1 Roda Market Scanner
         swing_triggers = self.scanner.scan_swing_opportunities(
             market_contexts=market_contexts,
             ema_contexts=self.last_ema_contexts,
-            regime_info={}  # TODO: integrar regime_info se disponível
+            regime_info=regime_info_by_symbol  # [Claude Trend Refactor] Passa regime_info
         )
         
         scalp_triggers = self.scanner.scan_scalp_opportunities(
             market_contexts=market_contexts,
             ema_contexts=self.last_ema_contexts
         )
+        
+        # [Claude Trend Refactor] Filtra triggers contra-tendência
+        from bot.phase3 import check_trend_alignment
+        
+        filtered_swing_triggers = []
+        for trigger in swing_triggers:
+            symbol = trigger.symbol
+            regime = regime_info_by_symbol.get(symbol, {})
+            trend_bias = regime.get('trend_bias', 'neutral')
+            
+            # Verifica se o direction_hint está alinhado com trend_bias
+            direction = trigger.direction_hint or 'neutral'
+            
+            # Mapeia direction para side
+            if direction in ['bullish', 'long', 'bull']:
+                side = 'long'
+            elif direction in ['bearish', 'short', 'bear']:
+                side = 'short'
+            else:
+                side = 'neutral'
+            
+            allowed, reason = check_trend_alignment(
+                action='open',
+                side=side,
+                trend_bias=trend_bias,
+                confidence=0.7,  # Default para triggers
+                mode=self.mode_manager.current_mode.value if hasattr(self, 'mode_manager') else "BALANCEADO"
+            )
+            
+            if allowed:
+                filtered_swing_triggers.append(trigger)
+                self.logger.debug(f"[TREND FILTER] ✅ Trigger {symbol} {direction} aprovado (trend_bias={trend_bias})")
+            else:
+                self.logger.info(f"[TREND FILTER] 🚫 Trigger {symbol} {direction} BLOQUEADO: {reason}")
+        
+        swing_triggers = filtered_swing_triggers
+        # ================================================
         
         # === SWING (Claude) via TRIGGERS ===
         swing_decisions = []
@@ -1174,11 +1306,48 @@ class HyperliquidBot:
         scalp_decisions = []
         triggers_processed_scalp = 0
         
+        # [Claude Trend Refactor] Lista de símbolos com posição SWING aberta
+        swing_positions = set()
+        for pos_dict in self.position_manager.get_all_positions():
+            if pos_dict.get('strategy') == 'swing':
+                swing_positions.add(pos_dict.get('symbol'))
+        
         if self.openai_enabled and scalp_triggers:
             for trigger in scalp_triggers:
                 if triggers_processed_scalp >= 5:  # Limite por iteração
                     self.logger.debug("[AI BUDGET] Limite de triggers SCALP por iteração atingido")
                     break
+                
+                # [Claude Trend Refactor] Proteção SWING vs SCALP
+                # Se há posição swing aberta neste símbolo, verifica alinhamento
+                if trigger.symbol in swing_positions:
+                    swing_pos = next((p for p in self.position_manager.get_all_positions() 
+                                     if p.get('symbol') == trigger.symbol and p.get('strategy') == 'swing'), None)
+                    
+                    if swing_pos:
+                        swing_side = swing_pos.get('side', 'long')
+                        scalp_direction = trigger.direction_hint or 'neutral'
+                        
+                        # Mapeia direction para side
+                        if scalp_direction in ['bullish', 'long', 'bull']:
+                            scalp_side = 'long'
+                        elif scalp_direction in ['bearish', 'short', 'bear']:
+                            scalp_side = 'short'
+                        else:
+                            scalp_side = 'neutral'
+                        
+                        # Se scalp é contra o swing, bloqueia
+                        if scalp_side != 'neutral' and scalp_side != swing_side:
+                            self.logger.warning(
+                                f"[SWING PROTECTION] 🛡️ Scalp {trigger.symbol} {scalp_side} BLOQUEADO - "
+                                f"Posição SWING {swing_side} aberta"
+                            )
+                            continue
+                        
+                        self.logger.info(
+                            f"[SWING PROTECTION] ✅ Scalp {trigger.symbol} {scalp_side} permitido - "
+                            f"Alinhado com SWING {swing_side}"
+                        )
                 
                 # Verifica orçamento
                 if not self.ai_budget.can_call_openai(trigger.trigger_type, trigger.symbol, trigger.timeframe):
@@ -1862,6 +2031,85 @@ class HyperliquidBot:
             
             self.logger.info(f"🎯 Ajustando TP para ${new_tp_price:.2f} ({new_tp_pct:.2f}%)")
             self.position_manager.update_take_profit(symbol, new_tp_pct)
+    
+    # ========================================================================
+    # [Claude Trend Refactor] Método para executar Pyramiding
+    # ========================================================================
+    def _execute_pyramid_add(self, symbol: str, size_pct: float, current_price: float, reason: str):
+        """
+        Executa add de posição (pyramiding).
+        
+        Args:
+            symbol: Símbolo
+            size_pct: Percentual da posição atual para adicionar
+            current_price: Preço atual
+            reason: Motivo do add
+        """
+        position = self.position_manager.get_position(symbol)
+        if not position:
+            self.logger.warning(f"[PYRAMID] {symbol}: Posição não encontrada para add")
+            return
+        
+        # Calcula tamanho do add
+        current_size = position.size
+        add_size = current_size * size_pct
+        
+        self.logger.info(f"\n{'='*50}")
+        self.logger.info(f"📈 PYRAMIDING: {symbol}")
+        self.logger.info(f"Add Size: {add_size:.4f} ({size_pct*100:.0f}% da posição atual)")
+        self.logger.info(f"Motivo: {reason}")
+        self.logger.info(f"{'='*50}")
+        
+        # MODO DRY RUN
+        if not self.live_trading:
+            self.logger.warning("⚠️  DRY RUN MODE - Ordem de add NÃO executada")
+            self.logger.info(f"[SIMULAÇÃO] Add {add_size:.4f} em {symbol} @ ${current_price:.2f}")
+            
+            # Atualiza posição no manager (simulado)
+            self.position_manager.execute_pyramid_add(symbol, add_size, current_price)
+            
+            # Notifica
+            self.telegram.notify_message(
+                f"📈 <b>PYRAMID ADD {symbol}</b> (DRY RUN)\n"
+                f"Add: {add_size:.4f}\n"
+                f"Preço: ${current_price:.2f}\n"
+                f"Motivo: {reason}"
+            )
+            return
+        
+        # MODO LIVE TRADING
+        try:
+            is_buy = (position.side == 'long')
+            
+            self.logger.info(f"📤 Enviando ordem de ADD...")
+            result = self.client.place_order(
+                coin=symbol,
+                is_buy=is_buy,
+                size=add_size,
+                price=current_price,
+                order_type="market",
+                reduce_only=False
+            )
+            
+            if result and result.get('status') == 'ok':
+                self.logger.info(f"✅ Ordem de ADD executada com sucesso")
+                
+                # Atualiza posição no manager
+                self.position_manager.execute_pyramid_add(symbol, add_size, current_price)
+                
+                # Notifica
+                self.telegram.notify_message(
+                    f"📈 <b>PYRAMID ADD {symbol}</b>\n"
+                    f"Add: {add_size:.4f}\n"
+                    f"Preço: ${current_price:.2f}\n"
+                    f"Motivo: {reason}"
+                )
+            else:
+                self.logger.error(f"❌ Erro ao executar ADD: {result}")
+                
+        except Exception as e:
+            self.logger.error(f"❌ Exceção ao executar PYRAMID ADD: {e}")
+    # ========================================================================
     
     def _execute_close(self, action: Dict[str, Any], prices: Dict[str, float]):
 
