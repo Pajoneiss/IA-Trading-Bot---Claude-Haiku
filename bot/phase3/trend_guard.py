@@ -295,9 +295,16 @@ def check_trend_alignment(action: str,
     if trend_bias == 'short' and side == 'long':
         return False, f"Long bloqueado em tendência SHORT"
     
-    # neutral -> depende
+    # neutral -> depende, mas com threshold mais baixo
     if trend_bias == 'neutral':
-        min_conf = TrendGuard.MODE_CONFIG.get(mode, {}).get("min_confidence_neutral", 0.85)
+        # [Core Strategy] Threshold reduzido para ser mais permissivo
+        min_conf_defaults = {
+            "AGRESSIVO": 0.60,    # Era 0.65
+            "BALANCEADO": 0.65,   # Era 0.72
+            "CONSERVADOR": 0.75   # Era 0.80
+        }
+        min_conf = min_conf_defaults.get(mode, 0.65)
+        
         if confidence < min_conf:
             return False, f"Confidence {confidence:.2f} insuficiente para NEUTRAL (min={min_conf:.2f})"
     
