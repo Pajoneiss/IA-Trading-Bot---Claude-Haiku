@@ -36,8 +36,8 @@ class ModeQualityParams:
 # Parâmetros padrão por modo
 QUALITY_PARAMS = {
     "CONSERVADOR": ModeQualityParams(
-        min_conf_swing=0.78,
-        min_conf_scalp=0.80,
+        min_conf_swing=0.72,    # Reduzido de 0.78
+        min_conf_scalp=0.75,    # Reduzido de 0.80
         min_confluences_swing=3,
         min_confluences_scalp=3,
         ema_alignment_weight=1.0,
@@ -45,8 +45,8 @@ QUALITY_PARAMS = {
         confluence_penalty_factor=0.08,
     ),
     "BALANCEADO": ModeQualityParams(
-        min_conf_swing=0.72,
-        min_conf_scalp=0.74,
+        min_conf_swing=0.65,    # Reduzido de 0.72
+        min_conf_scalp=0.68,    # Reduzido de 0.74
         min_confluences_swing=2,
         min_confluences_scalp=2,
         ema_alignment_weight=0.8,
@@ -54,8 +54,8 @@ QUALITY_PARAMS = {
         confluence_penalty_factor=0.05,
     ),
     "AGRESSIVO": ModeQualityParams(
-        min_conf_swing=0.68,
-        min_conf_scalp=0.70,
+        min_conf_swing=0.60,    # Reduzido de 0.68
+        min_conf_scalp=0.62,    # Reduzido de 0.70
         min_confluences_swing=1,
         min_confluences_scalp=1,
         ema_alignment_weight=0.6,
