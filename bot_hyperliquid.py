@@ -1,6 +1,11 @@
 """
 BOT HYPERLIQUID 24/7 COM IA
 Bot de trading autônomo que usa Claude API para decisões inteligentes
+
+MODOS DE OPERAÇÃO:
+- Normal: Todos os filtros ativos (conservador)
+- Turbo: Filtros simplificados, mais agressivo
+- Learning: Aprende com trades e ajusta parâmetros
 """
 import os
 import sys
@@ -34,6 +39,10 @@ from bot.cooldown_manager import CooldownManager
 # PATCH v3.0 - AI Budget + Market Scanner
 from bot.ai_budget_manager import AIBudgetManager
 from bot.market_scanner import MarketScanner, ScanTrigger
+
+# PATCH v3.1 - Turbo Mode + Learning Engine
+from bot.turbo_mode import TurboMode, get_turbo_mode
+from bot.learning_engine import LearningEngine, get_learning_engine
 
 
 # ==================== CONFIGURAÇÃO DE LOGGING ====================
@@ -437,6 +446,25 @@ class HyperliquidBot:
         self.config = config
         self.logger = logging.getLogger(__name__)
         
+        # ========== PATCH v3.1: TURBO MODE + LEARNING ==========
+        # Turbo Mode: Simplifica filtros, mais agressivo
+        self.turbo_mode_enabled = config.get('turbo_mode', os.getenv('TURBO_MODE', 'false').lower() == 'true')
+        # Learning Engine: Aprende com trades
+        self.learning_enabled = config.get('learning_enabled', os.getenv('LEARNING_ENABLED', 'true').lower() == 'true')
+        
+        if self.turbo_mode_enabled:
+            self.logger.warning("🚀🚀🚀 TURBO MODE ATIVADO - Filtros simplificados!")
+            self.turbo = get_turbo_mode(config, self.logger)
+        else:
+            self.turbo = None
+        
+        if self.learning_enabled:
+            self.learning_engine = get_learning_engine(self.logger)
+            self.logger.info(f"📚 Learning Engine ativado: {self.learning_engine.get_summary()}")
+        else:
+            self.learning_engine = None
+        # =========================================================
+        
         # Inicializa componentes
         self.client = HyperliquidBotClient(network=config['network'])
         
@@ -480,9 +508,13 @@ class HyperliquidBot:
         self.action_cooldown_seconds = config.get('action_cooldown_seconds', 300)  # 5 minutos default
         self.last_action_time = {}  # {symbol: timestamp}
         
-        # Confiança mínima para agir
-        self.min_confidence_open = config.get('min_confidence_open', 0.75)
-        self.min_confidence_adjust = config.get('min_confidence_adjust', 0.80)  # increase/decrease precisam de mais confiança
+        # Confiança mínima para agir - AJUSTADA POR TURBO MODE
+        if self.turbo_mode_enabled:
+            self.min_confidence_open = config.get('min_confidence_open', 0.60)  # Mais baixo em turbo
+            self.min_confidence_adjust = config.get('min_confidence_adjust', 0.65)
+        else:
+            self.min_confidence_open = config.get('min_confidence_open', 0.75)
+            self.min_confidence_adjust = config.get('min_confidence_adjust', 0.80)
         
         # Máximo de ações de ajuste (increase/decrease) por iteração
         self.max_adjustments_per_iteration = config.get('max_adjustments_per_iteration', 1)
@@ -1428,7 +1460,24 @@ class HyperliquidBot:
                 symbol = parsed.get('symbol')
                 market_ctx = market_snapshot.get(symbol, {})
                 
-                # Avalia Quality Gate
+                # ========== TURBO MODE BYPASS ==========
+                if self.turbo_mode_enabled and self.turbo:
+                    # Em turbo mode, usa avaliação simplificada
+                    candles = market_ctx.get('candles_h1', [])
+                    side = parsed.get('side', parsed.get('direction', 'long'))
+                    confidence = float(parsed.get('confidence', 0.7))
+                    
+                    turbo_ok, turbo_reason = self.turbo.evaluate_quick(symbol, candles, side, confidence)
+                    
+                    if turbo_ok:
+                        self.logger.info(f"[TURBO] ✅ {symbol} aprovado: {turbo_reason}")
+                        validated_decisions.append(parsed)
+                    else:
+                        self.logger.info(f"[TURBO] 🚫 {symbol} rejeitado: {turbo_reason}")
+                    continue
+                # =========================================
+                
+                # Avalia Quality Gate (modo normal)
                 gate_result = self.quality_gate.evaluate(
                     decision=parsed,
                     market_context=market_ctx,
@@ -2197,6 +2246,40 @@ class HyperliquidBot:
                     pnl_usd=pnl_usd,
                     reason=reason
                 )
+            
+            # ========== LEARNING ENGINE: Registra trade ==========
+            if self.learning_enabled and self.learning_engine:
+                try:
+                    # Calcula duração
+                    entry_time = position.metadata.get('entry_time') if hasattr(position, 'metadata') else None
+                    duration = 0
+                    if entry_time:
+                        from datetime import datetime
+                        try:
+                            entry_dt = datetime.fromisoformat(entry_time) if isinstance(entry_time, str) else entry_time
+                            duration = int((datetime.now() - entry_dt).total_seconds() / 60)
+                        except:
+                            duration = 0
+                    
+                    self.learning_engine.record_trade({
+                        'symbol': symbol,
+                        'side': position.side,
+                        'entry_price': position.entry_price,
+                        'exit_price': current_price,
+                        'pnl_pct': pnl_pct,
+                        'pnl_usd': pnl_usd,
+                        'duration_minutes': duration,
+                        'trend_bias': position.metadata.get('trend_bias', 'neutral') if hasattr(position, 'metadata') else 'neutral',
+                        'regime': position.metadata.get('regime', 'UNKNOWN') if hasattr(position, 'metadata') else 'UNKNOWN',
+                        'confidence': position.metadata.get('confidence', 0) if hasattr(position, 'metadata') else 0,
+                        'trigger_type': position.metadata.get('trigger_type', 'unknown') if hasattr(position, 'metadata') else 'unknown',
+                        'ema_alignment': position.metadata.get('ema_alignment', 'unknown') if hasattr(position, 'metadata') else 'unknown',
+                        'volatility': position.metadata.get('volatility', 'normal') if hasattr(position, 'metadata') else 'normal',
+                        'chop_score': position.metadata.get('chop_score', 0) if hasattr(position, 'metadata') else 0,
+                    })
+                except Exception as e:
+                    self.logger.error(f"[LEARNING] Erro ao registrar trade: {e}")
+            # =====================================================
             
             self.position_manager.remove_position(symbol)
             
