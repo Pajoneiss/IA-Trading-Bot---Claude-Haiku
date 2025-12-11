@@ -1,0 +1,11 @@
+{
+  "min_confidence": 0.65,
+  "min_confidence_neutral": 0.80,
+  "allow_counter_trend": false,
+  "max_chop_score": 0.7,
+  "pyramid_min_pnl": 0.5,
+  "pyramid_max_adds": 2,
+  "trailing_activation_pct": 1.0,
+  "prefer_trend_aligned": true,
+  "aggression_level": 0.5
+}
