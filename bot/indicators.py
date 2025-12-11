@@ -212,6 +212,11 @@ class TechnicalIndicators:
                      period: int = 14) -> Optional[Dict[str, float]]:
         """
         Calcula ADX (Average Directional Index) para medir força da tendência.
+        ADX varia de 0 a 100:
+        - < 20: Tendência fraca ou range
+        - 20-40: Tendência moderada
+        - 40-60: Tendência forte
+        - > 60: Tendência muito forte
         
         Args:
             highs: Lista de preços máximos
@@ -222,81 +227,79 @@ class TechnicalIndicators:
         Returns:
             Dict com adx, plus_di, minus_di ou None
         """
-        if len(highs) < period + 1 or len(lows) < period + 1 or len(closes) < period + 1:
+        n = len(closes)
+        if n < period * 2:  # Precisa de dados suficientes
             return None
         
-        highs_arr = np.array(highs)
-        lows_arr = np.array(lows)
-        closes_arr = np.array(closes)
+        highs_arr = np.array(highs, dtype=float)
+        lows_arr = np.array(lows, dtype=float)
+        closes_arr = np.array(closes, dtype=float)
         
-        # True Range
-        tr_list = []
-        plus_dm_list = []
-        minus_dm_list = []
+        # Calcula True Range e Directional Movement
+        tr = np.zeros(n)
+        plus_dm = np.zeros(n)
+        minus_dm = np.zeros(n)
         
-        for i in range(1, len(closes_arr)):
+        for i in range(1, n):
             # True Range
             hl = highs_arr[i] - lows_arr[i]
             hc = abs(highs_arr[i] - closes_arr[i-1])
             lc = abs(lows_arr[i] - closes_arr[i-1])
-            tr = max(hl, hc, lc)
-            tr_list.append(tr)
+            tr[i] = max(hl, hc, lc)
             
             # Directional Movement
             up_move = highs_arr[i] - highs_arr[i-1]
             down_move = lows_arr[i-1] - lows_arr[i]
             
-            plus_dm = up_move if (up_move > down_move and up_move > 0) else 0
-            minus_dm = down_move if (down_move > up_move and down_move > 0) else 0
-            
-            plus_dm_list.append(plus_dm)
-            minus_dm_list.append(minus_dm)
+            if up_move > down_move and up_move > 0:
+                plus_dm[i] = up_move
+            if down_move > up_move and down_move > 0:
+                minus_dm[i] = down_move
         
-        if len(tr_list) < period:
-            return None
+        # Wilder's Smoothing (EMA-like)
+        def wilder_smooth(arr, period):
+            result = np.zeros(len(arr))
+            result[period] = np.sum(arr[1:period+1])
+            for i in range(period + 1, len(arr)):
+                result[i] = result[i-1] - (result[i-1] / period) + arr[i]
+            return result
         
-        # Smoothed averages (Wilder's smoothing)
-        def wilder_smooth(data, period):
-            smoothed = [np.mean(data[:period])]
-            for i in range(period, len(data)):
-                smoothed.append(smoothed[-1] - (smoothed[-1] / period) + data[i])
-            return smoothed
+        atr = wilder_smooth(tr, period)
+        plus_dm_smooth = wilder_smooth(plus_dm, period)
+        minus_dm_smooth = wilder_smooth(minus_dm, period)
         
-        atr_smooth = wilder_smooth(tr_list, period)
-        plus_dm_smooth = wilder_smooth(plus_dm_list, period)
-        minus_dm_smooth = wilder_smooth(minus_dm_list, period)
+        # +DI e -DI
+        plus_di = np.zeros(n)
+        minus_di = np.zeros(n)
+        for i in range(period, n):
+            if atr[i] > 0:
+                plus_di[i] = 100 * plus_dm_smooth[i] / atr[i]
+                minus_di[i] = 100 * minus_dm_smooth[i] / atr[i]
         
-        # +DI and -DI
-        plus_di_list = []
-        minus_di_list = []
-        for i in range(len(atr_smooth)):
-            if atr_smooth[i] > 0:
-                plus_di_list.append(100 * plus_dm_smooth[i] / atr_smooth[i])
-                minus_di_list.append(100 * minus_dm_smooth[i] / atr_smooth[i])
-            else:
-                plus_di_list.append(0)
-                minus_di_list.append(0)
-        
-        # DX and ADX
-        dx_list = []
-        for i in range(len(plus_di_list)):
-            di_sum = plus_di_list[i] + minus_di_list[i]
+        # DX
+        dx = np.zeros(n)
+        for i in range(period, n):
+            di_sum = plus_di[i] + minus_di[i]
             if di_sum > 0:
-                dx = 100 * abs(plus_di_list[i] - minus_di_list[i]) / di_sum
-            else:
-                dx = 0
-            dx_list.append(dx)
+                dx[i] = 100 * abs(plus_di[i] - minus_di[i]) / di_sum
         
-        if len(dx_list) < period:
-            adx = np.mean(dx_list)
-        else:
-            adx_smooth = wilder_smooth(dx_list, period)
-            adx = adx_smooth[-1] if adx_smooth else 0
+        # ADX = Smoothed DX
+        adx_arr = np.zeros(n)
+        # Primeiro ADX é média simples dos DX
+        if n > period * 2:
+            adx_arr[period * 2 - 1] = np.mean(dx[period:period*2])
+            for i in range(period * 2, n):
+                adx_arr[i] = (adx_arr[i-1] * (period - 1) + dx[i]) / period
+        
+        # Retorna valores finais (clamped 0-100)
+        final_adx = min(100, max(0, adx_arr[-1]))
+        final_plus_di = min(100, max(0, plus_di[-1]))
+        final_minus_di = min(100, max(0, minus_di[-1]))
         
         return {
-            'adx': float(adx),
-            'plus_di': float(plus_di_list[-1]) if plus_di_list else 0,
-            'minus_di': float(minus_di_list[-1]) if minus_di_list else 0
+            'adx': float(final_adx),
+            'plus_di': float(final_plus_di),
+            'minus_di': float(final_minus_di)
         }
     
     # ========================================================================
