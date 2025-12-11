@@ -7,6 +7,10 @@ PATCH v2.0:
 - Penalização de confluência menos agressiva para Balanceado/Agressivo
 - Tratamento especial para daily EMA cross em swing trades
 - allow_high_rsi_on_daily_shift: permite RSI alto quando daily cross favorável
+
+[Claude Trend Refactor] Data: 2024-12-11:
+- Integração com TrendGuard para bloquear trades contra-tendência
+- Thresholds ajustados por regime (mais tolerante em tendência, mais rígido em range)
 """
 import logging
 from typing import Dict, Any, Optional, List
@@ -190,6 +194,51 @@ class QualityGate:
                     logger.warning(f"[QUALITY GATE] ❌ {symbol} rejeitado: regime {regime} não compatível com modo {mode_str}")
                     return result
         
+        # === CRITÉRIO 0.5: TREND GUARD - ALINHAMENTO COM TENDÊNCIA ===
+        # [Claude Trend Refactor] Verifica se trade está A FAVOR da tendência
+        try:
+            from bot.phase3 import TrendGuard
+            
+            # Obtém regime_info do contexto
+            regime_info = market_context.get('regime_info', {}) if market_context else {}
+            
+            # Se não tiver regime_info no contexto, tenta extrair de outras fontes
+            if not regime_info:
+                phase3_data = market_context.get('phase3', {}) if market_context else {}
+                regime_info = {
+                    'regime': phase3_data.get('regime', 'RANGE_CHOP'),
+                    'trend_bias': phase3_data.get('trend_bias', 'neutral')
+                }
+            
+            # Cria TrendGuard e avalia
+            trend_guard = TrendGuard(mode_manager=self.mode_manager, logger_instance=logger)
+            tg_result = trend_guard.evaluate(decision, regime_info, confidence)
+            
+            if not tg_result.allowed:
+                result.approved = False
+                result.confidence_score = confidence
+                result.reasons.append(f"[TREND GUARD] {tg_result.reason}")
+                logger.warning(
+                    f"[QUALITY GATE] 🚫 {symbol} BLOQUEADO pelo TrendGuard: "
+                    f"action={tg_result.original_action}, side={tg_result.original_side}, "
+                    f"trend_bias={tg_result.trend_bias}"
+                )
+                return result
+            
+            # Adiciona warnings do TrendGuard
+            for warning in tg_result.warnings:
+                result.warnings.append(warning)
+            
+            logger.info(
+                f"[QUALITY GATE] ✅ {symbol} aprovado pelo TrendGuard: "
+                f"trend_bias={tg_result.trend_bias}, regime={tg_result.regime}"
+            )
+            
+        except ImportError:
+            logger.debug("[QUALITY GATE] TrendGuard não disponível, pulando verificação")
+        except Exception as e:
+            logger.error(f"[QUALITY GATE] Erro no TrendGuard: {e}")
+        
         # === CRITÉRIO 1: CONFIDENCE MÍNIMA ===
         if confidence < min_conf:
             result.approved = False
@@ -272,33 +321,44 @@ class QualityGate:
                     result.warnings.append("PANIC_HIGH_VOL mas confidence >= 0.90")
             
             # BLOQUEIA em RANGE_CHOP ou CHOPPY - AJUSTADO POR MODO
+            # [Claude Trend Refactor] Mais tolerante se trend_bias indica tendência clara
+            trend_bias = regime_info.get('trend_bias', 'neutral') if regime_info else 'neutral'
+            is_trending = trend_bias in ['long', 'short']
+            
             if (regime_info and regime_info['regime'] == 'RANGE_CHOP') or \
                (chop_info and chop_info['is_choppy']):
                 
                 chop_score = chop_info.get('chop_score', 0) if chop_info else 0.5
                 
-                # PATCH v2.0: Em Balanceado/Agressivo, só bloqueia se for chop MUITO alto
-                if mode_str == "CONSERVADOR":
-                    if len(confluences) < 3:
-                        result.approved = False
-                        result.confidence_score = confidence
-                        result.reasons.append(f"RANGE_CHOP/Choppy (score={chop_score:.2f}) + poucas confluências ({len(confluences)} < 3)")
-                        logger.warning(f"[QUALITY GATE] ❌ {symbol} bloqueado: mercado sujo + poucas confluências")
-                        return result
-                elif mode_str == "BALANCEADO":
-                    # Balanceado: só bloqueia se chop muito alto e poucas confluências
-                    if chop_score > 0.7 and len(confluences) < 2:
-                        result.approved = False
-                        result.confidence_score = confidence
-                        result.reasons.append(f"RANGE_CHOP alto (score={chop_score:.2f}) + confluências < 2")
-                        return result
-                # Agressivo: não bloqueia por chop em swing
+                # [Claude Trend Refactor] Se temos tendência clara, somos mais tolerantes
+                if is_trending:
+                    # Em tendência, só bloqueia se chop MUITO alto (>0.8)
+                    if chop_score > 0.8:
+                        result.warnings.append(f"Chop alto ({chop_score:.2f}) mas permitido por tendência {trend_bias}")
+                    logger.info(f"[QUALITY GATE] Chop tolerado em {symbol} por tendência {trend_bias}")
+                else:
+                    # Sem tendência clara, aplica regras normais por modo
+                    if mode_str == "CONSERVADOR":
+                        if len(confluences) < 3:
+                            result.approved = False
+                            result.confidence_score = confidence
+                            result.reasons.append(f"RANGE_CHOP/Choppy (score={chop_score:.2f}) + poucas confluências ({len(confluences)} < 3)")
+                            logger.warning(f"[QUALITY GATE] ❌ {symbol} bloqueado: mercado sujo + poucas confluências")
+                            return result
+                    elif mode_str == "BALANCEADO":
+                        # Balanceado: só bloqueia se chop muito alto e poucas confluências
+                        if chop_score > 0.7 and len(confluences) < 2:
+                            result.approved = False
+                            result.confidence_score = confidence
+                            result.reasons.append(f"RANGE_CHOP alto (score={chop_score:.2f}) + confluências < 2")
+                            return result
+                    # Agressivo: não bloqueia por chop em swing
                 
-                # Se scalp em chop, bloqueia
-                if ai_type == 'scalp':
+                # Se scalp em chop E sem tendência, bloqueia
+                if ai_type == 'scalp' and not is_trending:
                     result.approved = False
                     result.confidence_score = confidence
-                    result.reasons.append(f"Scalp bloqueado em CHOP (score={chop_score:.2f})")
+                    result.reasons.append(f"Scalp bloqueado em CHOP (score={chop_score:.2f}) sem tendência")
                     logger.warning(f"[QUALITY GATE] ❌ {symbol} bloqueado: scalp em chop")
                     return result
                 
