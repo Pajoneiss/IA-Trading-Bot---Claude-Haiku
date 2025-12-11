@@ -1,13 +1,23 @@
 """
 Phase 2 - Decision Parser
 Parse e validação robusta de decisões de IA
+
+[Claude Trend Refactor] Data: 2024-12-11
+- Defaults mais seguros para confidence (0.7 em vez de 0.0)
+- Validação extra de trend_bias
+- Melhor tratamento de JSON malformado
 """
 import json
 import logging
+import re
 from typing import Dict, Any, Optional, Union
 from bot.phase2.models import OpenDecision, ManageDecision, SkipDecision
 
 logger = logging.getLogger(__name__)
+
+
+# Default confidence quando não informado ou inválido
+DEFAULT_CONFIDENCE = 0.70
 
 
 class DecisionParser:
@@ -30,8 +40,26 @@ class DecisionParser:
             if isinstance(response, str):
                 # Remove markdown se tiver
                 response = response.strip()
-                if response.startswith('```json'):
-                    response = response.replace('```json', '').replace('```', '').strip()
+                
+                # [Claude Trend Refactor] Limpeza mais agressiva
+                # Remove ```json e ``` e qualquer texto antes/depois do JSON
+                if '```json' in response:
+                    response = response.split('```json')[-1]
+                if '```' in response:
+                    response = response.split('```')[0]
+                
+                # Tenta encontrar JSON válido na string
+                response = response.strip()
+                
+                # Se começa com texto antes do {, remove
+                if not response.startswith('{') and '{' in response:
+                    json_start = response.find('{')
+                    response = response[json_start:]
+                
+                # Se tem texto depois do }, remove
+                if '}' in response:
+                    json_end = response.rfind('}') + 1
+                    response = response[:json_end]
                 
                 try:
                     decision = json.loads(response)
@@ -50,11 +78,20 @@ class DecisionParser:
             # Determina tipo de ação
             action = decision.get('action', '').lower()
             
+            # Normaliza actions alternativas
+            if action in ('open_long', 'open_short'):
+                if action == 'open_long':
+                    decision['side'] = 'long'
+                else:
+                    decision['side'] = 'short'
+                action = 'open'
+                decision['action'] = 'open'
+            
             if action == 'open':
                 return DecisionParser._parse_open_decision(decision, source)
             elif action == 'manage':
                 return DecisionParser._parse_manage_decision(decision, source)
-            elif action == 'skip':
+            elif action in ('skip', 'hold'):
                 return DecisionParser._parse_skip_decision(decision, source)
             else:
                 logger.warning(f"[PARSER] Action desconhecida: {action}")
@@ -66,7 +103,13 @@ class DecisionParser:
     
     @staticmethod
     def _parse_open_decision(decision: dict, source: str) -> Optional[Dict[str, Any]]:
-        """Parse decisão de OPEN"""
+        """
+        Parse decisão de OPEN
+        
+        [Claude Trend Refactor] Melhorias:
+        - Default confidence = 0.70 (não 0.0)
+        - Extrai trend_bias se presente
+        """
         try:
             # Campos obrigatórios
             symbol = decision.get('symbol', '').upper()
@@ -79,9 +122,37 @@ class DecisionParser:
                 logger.warning(f"[PARSER] Side inválido: {side}, usando 'long'")
                 side = 'long'
             
-            # Confidence
-            confidence = float(decision.get('confidence', 0.0))
-            confidence = max(0.0, min(1.0, confidence))  # Clamp entre 0 e 1
+            # [Claude Trend Refactor] Confidence com default mais seguro
+            raw_confidence = decision.get('confidence')
+            
+            # Tenta extrair confidence de várias formas
+            if raw_confidence is None:
+                confidence = DEFAULT_CONFIDENCE
+                logger.warning(f"[PARSER] ⚠️ Confidence não informado, usando default: {DEFAULT_CONFIDENCE}")
+            elif isinstance(raw_confidence, str):
+                # Pode vir como "0.75" ou "75%"
+                try:
+                    raw_confidence = raw_confidence.replace('%', '').strip()
+                    confidence = float(raw_confidence)
+                    if confidence > 1.0:
+                        confidence = confidence / 100  # Era porcentagem
+                except ValueError:
+                    confidence = DEFAULT_CONFIDENCE
+                    logger.warning(f"[PARSER] Confidence string inválida: {raw_confidence}, usando default")
+            else:
+                try:
+                    confidence = float(raw_confidence)
+                except (ValueError, TypeError):
+                    confidence = DEFAULT_CONFIDENCE
+                    logger.warning(f"[PARSER] Confidence inválido: {raw_confidence}, usando default")
+            
+            # Clamp entre 0 e 1
+            confidence = max(0.0, min(1.0, confidence))
+            
+            # Se confidence muito baixo (provavelmente erro), usa default
+            if confidence < 0.1 and raw_confidence != 0:
+                logger.warning(f"[PARSER] ⚠️ Confidence muito baixo ({confidence}), substituindo por default")
+                confidence = DEFAULT_CONFIDENCE
             
             # Style
             style = decision.get('style', 'swing').lower()
@@ -94,8 +165,13 @@ class DecisionParser:
             if risk_profile not in ['AGGRESSIVE', 'BALANCED', 'CONSERVATIVE']:
                 risk_profile = 'BALANCED'
             
+            # [Claude Trend Refactor] Extrai trend_bias
+            trend_bias = decision.get('trend_bias', 'neutral').lower()
+            if trend_bias not in ['long', 'short', 'neutral']:
+                trend_bias = 'neutral'
+            
             # Stop loss
-            stop_loss_price = float(decision.get('stop_loss_price', 0.0))
+            stop_loss_price = float(decision.get('stop_loss_price') or decision.get('structural_stop_price') or 0.0)
             stop_loss_pct = float(decision.get('stop_loss_pct', 2.0))
             
             # Take profit
@@ -126,7 +202,11 @@ class DecisionParser:
             )
             
             result = open_dec.to_dict()
-            logger.info(f"[PARSER] ✅ Open decision parsed: {symbol} {side} {style} conf={confidence:.2f}")
+            
+            # [Claude Trend Refactor] Adiciona trend_bias ao resultado
+            result['trend_bias'] = trend_bias
+            
+            logger.info(f"[PARSER] ✅ Open decision parsed: {symbol} {side} {style} conf={confidence:.2f} trend_bias={trend_bias}")
             
             return result
             
