@@ -204,24 +204,46 @@ class AiDecisionEngine:
                       account_info: Dict[str, Any],
                       open_positions: List[Dict[str, Any]],
                       risk_limits: Dict[str, Any]) -> str:
-        """Constrói prompt para IA (Claude) com persona Trader Institucional Agressivo/Inteligente"""
+        """
+        [Claude Trend Refactor] Data: 2024-12-11
+        Constrói prompt para IA (Claude) com:
+        - Formato JSON RÍGIDO obrigatório
+        - trend_bias passado no contexto
+        - Confidence OBRIGATÓRIO entre 0.0-1.0
+        """
         
         prompt = """Você é o HEAD TRADER de um fundo quantitativo institucional.
-Especialidade: SWING TRADE usando SMC (Smart Money Concepts), Price Action Puro e Análise Multi-Timeframe.
+Especialidade: TREND FOLLOWING + SWING TRADE usando SMC (Smart Money Concepts), Price Action e EMAs.
 
 ═══════════════════════════════════════════════════════
-🎯 FILOSOFIA DE TRADING & AGRESSIVIDADE
+🎯 FILOSOFIA: SURFISTA DE TENDÊNCIA
 ═══════════════════════════════════════════════════════
 
-SEU OBJETIVO: Maximizar retorno ajustado ao risco.
-- NÃO SEJA TIMÍDO. Se o setup existe, OPERE.
-- RSI ALTO/BAIXO NÃO É PROIBIÇÃO DE TRADE. Em tendências fortes, o RSI fica extremo por muito tempo.
-- Posição aberta em um ativo (ex: ZEC) NÃO IMPEDE abertura em outros (ex: BTC, ETH), desde que haja margem.
-- DIVERSIFIQUE: Se já está em ZEC, procure oportunidades em BTC ou ETH para não concentrar risco.
+SEU OBJETIVO: Operar A FAVOR da tendência principal e SURFAR movimentos longos.
+
+REGRAS ABSOLUTAS:
+1. NUNCA opere CONTRA o trend_bias informado no contexto:
+   - Se trend_bias = "long" → SÓ operações LONG permitidas
+   - Se trend_bias = "short" → SÓ operações SHORT permitidas
+   - Se trend_bias = "neutral" → Seja MUITO seletivo (confidence >= 0.85)
+
+2. RSI ALTO/BAIXO NÃO É PROIBIÇÃO em tendência forte. RSI fica extremo em tendências.
+
+3. DIVERSIFIQUE: Posição em um ativo não impede outras oportunidades.
 
 ═══════════════════════════════════════════════════════
-📊 EMAs + VWAP = TIMING DE ENTRADA (MUITO IMPORTANTE)
+📊 EMAs = DEFINIÇÃO DE TENDÊNCIA
 ═══════════════════════════════════════════════════════
+
+CRITÉRIO PRINCIPAL DE TENDÊNCIA (H1 ou timeframe maior):
+- TREND_BULL: Preço > EMA200 E EMA50 > EMA200
+- TREND_BEAR: Preço < EMA200 E EMA50 < EMA200
+- RANGE/NEUTRAL: Caso contrário
+
+EMAs 9/26 para TIMING de entrada:
+- Cruzamento EMA9 > EMA26 = gatilho LONG
+- Cruzamento EMA9 < EMA26 = gatilho SHORT
+- Preço tocando EMA21 em pullback = entrada ideal
 
 PRIORIDADE DE ANÁLISE:
 1. ESTRUTURA (Topo/Fundo, BOS, CHoCH) = Define a direção.
@@ -301,55 +323,81 @@ GESTÃO DINÂMICA (Trailing/Parciais):
             
             prompt += f"Indicadores: EMA9=${ema9:.4f} | EMA21=${ema21:.4f} | RSI={rsi:.1f} | Vol={volatility:.2f}%\n"
             
-            # Trend
+            # Trend + trend_bias
             trend = ctx.get('trend', {})
             direction = trend.get('direction', 'neutral')
             strength = trend.get('strength', 0)
+            
+            # [Claude Trend Refactor] Passa trend_bias explicitamente
+            regime_info = ctx.get('regime_info', {})
+            trend_bias = regime_info.get('trend_bias', 'neutral')
+            regime = regime_info.get('regime', 'RANGE_CHOP')
+            
             prompt += f"Tendência Macro: {direction.upper()} (Força: {strength:.2f})\n"
+            prompt += f"⚠️ TREND_BIAS: {trend_bias.upper()} | Regime: {regime}\n"
             
             # Phase2 Structure
             phase2 = ctx.get('phase2', {})
             if phase2 and isinstance(phase2, dict):
                 structure = phase2.get('structure')
                 patterns = phase2.get('patterns', [])
-                regime = phase2.get('regime_kv', {})
+                regime_kv = phase2.get('regime_kv', {})
                 
                 if structure:
                     prompt += f"Estrutura: {structure.get('trend', 'N/A')}\n"
                 
-                if regime:
-                    prompt += f"Regime: {regime.get('name', 'UNKNOWN')} (Chop: {regime.get('chop_score', 0):.1f})\n"
+                if regime_kv:
+                    prompt += f"Regime (Phase2): {regime_kv.get('name', 'UNKNOWN')} (Chop: {regime_kv.get('chop_score', 0):.1f})\n"
 
-        # Formato de resposta
+        # Formato de resposta RÍGIDO
         prompt += """
 ═══════════════════════════════════════════════════════
-📝 DECISÃO (JSON OBRIGATÓRIO)
+📝 FORMATO DE RESPOSTA (JSON OBRIGATÓRIO E ESTRITO)
 ═══════════════════════════════════════════════════════
 
-Responda APENAS com um JSON. Se não houver oportunidade, use action: hold.
+⚠️ REGRAS CRÍTICAS:
+1. Responda APENAS com JSON válido, sem texto antes ou depois
+2. Não use ```json ou ``` - apenas o JSON puro
+3. O campo "confidence" é OBRIGATÓRIO e DEVE ser um número decimal entre 0.0 e 1.0
+4. RESPEITE o trend_bias informado - NÃO abra posições contrárias
 
-PARA ABRIR TRADE (SWING):
+═══════════════════════════════════════════════════════
+PARA ABRIR TRADE:
 {
   "action": "open",
   "symbol": "SÍMBOLO",
   "side": "long" ou "short",
   "style": "swing",
-  "entry_price": preço_atual,
-  "structural_stop_price": PREÇO_EXATO_DO_STOP (fundo/topo anterior),
-  "invalid_level": preço que invalida a tese antes do stop,
-  "management_plan": {
-    "style": "TREND_FOLLOW",
-    "trail_logic": "EMA21_CLOSE"
-  },
-  "confidence": 0.0 a 1.0 (Seja honesto. Agressivo aceita >0.65),
-  "reason": "Explique o setup: Estrutura + Timing (EMA/VWAP) + Contexto"
+  "confidence": 0.75,
+  "trend_bias": "long",
+  "entry_price": 100.50,
+  "structural_stop_price": 98.00,
+  "risk_profile": "BALANCED",
+  "reason": "Setup claro: tendência bullish H1, EMA9>EMA26, pullback na EMA21"
 }
 
-Observação: O tamanho da posição (size_usd) será calculado automaticamente pelo Risk Manager com base na distância do STOP ESTRUTURAL e o % de risco do modo atual. Você foca na qualidade do Stop.
+REGRAS DO CAMPO confidence:
+- DEVE ser um número decimal: 0.0, 0.5, 0.72, 0.85, 1.0
+- NUNCA use porcentagem (75% é ERRADO, use 0.75)
+- NUNCA deixe vazio ou null
+- Se incerto, use 0.6 como mínimo razoável
+- Alta convicção: 0.80 a 1.0
+- Média convicção: 0.65 a 0.79
+- Baixa convicção: < 0.65 (provavelmente será rejeitado)
 
-Se houver posição aberta e quiser gerenciar:
-{"action": "close", "symbol": "...", "reason": "..."}
-{"action": "hold", "reason": "..."}
+═══════════════════════════════════════════════════════
+PARA NÃO OPERAR:
+{"action": "hold", "reason": "Nenhum setup claro alinhado com tendência", "confidence": 0.0}
+
+PARA FECHAR POSIÇÃO:
+{"action": "close", "symbol": "BTCUSDT", "reason": "Tendência revertendo", "confidence": 0.80}
+═══════════════════════════════════════════════════════
+
+LEMBRETE FINAL:
+- Side DEVE ser alinhado com trend_bias
+- Se trend_bias="long", side deve ser "long" 
+- Se trend_bias="short", side deve ser "short"
+- Se trend_bias="neutral", só opere com confidence >= 0.85
 """
         
         return prompt
