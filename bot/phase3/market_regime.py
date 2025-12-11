@@ -167,11 +167,146 @@ class MarketRegimeAnalyzer:
             return {'level': 'normal', 'atr': 0, 'atr_pct': 0}
     
     def _analyze_trend(self, candles: List[Dict[str, Any]], timeframe: str) -> Dict[str, Any]:
-        """Analisa tendência via swing highs/lows"""
+        """
+        Analisa tendência via swing highs/lows + EMAs (fallback mais tolerante)
+        
+        [Claude Trend Refactor] Data: 2024-12-11
+        - Adicionado análise por EMA como alternativa menos exigente
+        - EMA200 + EMA50 cross para detectar tendência mesmo sem swings perfeitos
+        """
         try:
             if len(candles) < 10:
                 return {'direction': 'neutral', 'strength': 0}
             
+            # === MÉTODO 1: EMA ANALYSIS (mais tolerante) ===
+            ema_trend = self._analyze_trend_by_ema(candles)
+            
+            # === MÉTODO 2: SWING ANALYSIS (mais rigoroso) ===
+            swing_trend = self._analyze_trend_by_swings(candles)
+            
+            # Combina: Se EMA detecta tendência clara, usa EMA
+            # Se EMA neutro mas swing detecta, usa swing
+            # Prioriza EMA porque é mais estável
+            if ema_trend['direction'] != 'neutral':
+                return {
+                    'direction': ema_trend['direction'],
+                    'strength': ema_trend['strength'],
+                    'method': 'ema',
+                    'ema_data': ema_trend
+                }
+            elif swing_trend['direction'] != 'neutral':
+                return {
+                    'direction': swing_trend['direction'],
+                    'strength': swing_trend['strength'],
+                    'method': 'swing',
+                    'swing_data': swing_trend
+                }
+            
+            return {'direction': 'neutral', 'strength': 0.3, 'method': 'none'}
+            
+        except Exception as e:
+            self.logger.debug(f"[MARKET REGIME] Erro ao analisar tendência: {e}")
+            return {'direction': 'neutral', 'strength': 0}
+    
+    def _analyze_trend_by_ema(self, candles: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        [Claude Trend Refactor] Análise de tendência por EMAs
+        
+        Critérios SIMPLES e TOLERANTES:
+        - BULLISH: Preço > EMA200 E EMA50 > EMA200
+        - BEARISH: Preço < EMA200 E EMA50 < EMA200
+        - NEUTRAL: caso contrário
+        """
+        try:
+            if len(candles) < 200:
+                # Fallback com menos candles: usa EMA50 + EMA21
+                return self._analyze_trend_by_short_ema(candles)
+            
+            # Extrai closes
+            closes = [c.get('close', 0) for c in candles if c.get('close')]
+            if len(closes) < 200:
+                return self._analyze_trend_by_short_ema(candles)
+            
+            # Calcula EMAs
+            ema50 = self._calculate_ema(closes, 50)
+            ema200 = self._calculate_ema(closes, 200)
+            
+            current_price = closes[-1]
+            
+            # Verifica alinhamento
+            price_above_200 = current_price > ema200
+            ema50_above_200 = ema50 > ema200
+            
+            # Distância do preço à EMA200 (para strength)
+            distance_pct = abs(current_price - ema200) / ema200 * 100 if ema200 > 0 else 0
+            
+            if price_above_200 and ema50_above_200:
+                direction = 'bullish'
+                # Strength aumenta com distância do preço à EMA200
+                strength = min(0.9, 0.6 + (distance_pct / 10))
+            elif not price_above_200 and not ema50_above_200:
+                direction = 'bearish'
+                strength = min(0.9, 0.6 + (distance_pct / 10))
+            else:
+                direction = 'neutral'
+                strength = 0.3
+            
+            return {
+                'direction': direction,
+                'strength': round(strength, 2),
+                'ema50': round(ema50, 4),
+                'ema200': round(ema200, 4),
+                'price': current_price,
+                'distance_pct': round(distance_pct, 2)
+            }
+            
+        except Exception as e:
+            self.logger.debug(f"[MARKET REGIME] Erro na análise EMA: {e}")
+            return {'direction': 'neutral', 'strength': 0}
+    
+    def _analyze_trend_by_short_ema(self, candles: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Análise com EMAs mais curtas quando não há dados suficientes para 200
+        Usa EMA21 + EMA50
+        """
+        try:
+            closes = [c.get('close', 0) for c in candles if c.get('close')]
+            if len(closes) < 50:
+                return {'direction': 'neutral', 'strength': 0}
+            
+            ema21 = self._calculate_ema(closes, 21)
+            ema50 = self._calculate_ema(closes, 50)
+            current_price = closes[-1]
+            
+            price_above_50 = current_price > ema50
+            ema21_above_50 = ema21 > ema50
+            
+            if price_above_50 and ema21_above_50:
+                return {'direction': 'bullish', 'strength': 0.65}
+            elif not price_above_50 and not ema21_above_50:
+                return {'direction': 'bearish', 'strength': 0.65}
+            
+            return {'direction': 'neutral', 'strength': 0.3}
+            
+        except Exception:
+            return {'direction': 'neutral', 'strength': 0}
+    
+    def _calculate_ema(self, values: List[float], period: int) -> float:
+        """Calcula EMA de uma lista de valores"""
+        if len(values) < period:
+            return sum(values) / len(values) if values else 0
+        
+        multiplier = 2 / (period + 1)
+        ema = sum(values[:period]) / period  # SMA inicial
+        
+        for value in values[period:]:
+            ema = (value - ema) * multiplier + ema
+        
+        return ema
+    
+    def _analyze_trend_by_swings(self, candles: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Análise original por swing highs/lows (separada para clareza)"""
+        try:
             # Identifica swing highs e lows
             highs = []
             lows = []
@@ -233,7 +368,6 @@ class MarketRegimeAnalyzer:
             }
             
         except Exception as e:
-            self.logger.debug(f"[MARKET REGIME] Erro ao analisar tendência: {e}")
             return {'direction': 'neutral', 'strength': 0}
     
     def _analyze_market_intel(self, market_intel: Optional[Dict[str, Any]]) -> Dict[str, Any]:
