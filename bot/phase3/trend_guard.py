@@ -54,15 +54,15 @@ class TrendGuard:
     MODE_CONFIG = {
         "CONSERVADOR": {
             "allow_neutral_entries": False,  # Não opera em neutral
-            "min_confidence_neutral": 0.90,
+            "min_confidence_neutral": 0.80,  # Reduzido de 0.90
         },
         "BALANCEADO": {
             "allow_neutral_entries": True,
-            "min_confidence_neutral": 0.85,
+            "min_confidence_neutral": 0.72,  # Reduzido de 0.85
         },
         "AGRESSIVO": {
             "allow_neutral_entries": True,
-            "min_confidence_neutral": 0.78,
+            "min_confidence_neutral": 0.65,  # Reduzido de 0.78
         },
     }
     
