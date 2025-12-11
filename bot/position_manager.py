@@ -420,6 +420,280 @@ class PositionManager:
 
         return actions
     
+    # ========================================================================
+    # [Claude Trend Refactor] PYRAMIDING E TRAILING AVANÇADO
+    # Data: 2024-12-11
+    # ========================================================================
+    
+    def check_pyramid_opportunity(self, 
+                                   symbol: str, 
+                                   current_price: float,
+                                   regime_info: dict,
+                                   mode: str = "BALANCEADO") -> dict:
+        """
+        Verifica se há oportunidade de pyramiding (aumentar posição).
+        
+        Regras:
+        1. Posição deve estar em lucro (>0.5%)
+        2. trend_bias deve continuar alinhado
+        3. Regime deve ser de tendência (TREND_BULL ou TREND_BEAR)
+        4. Limite de adds por posição (max 2-3)
+        
+        Args:
+            symbol: Símbolo da posição
+            current_price: Preço atual
+            regime_info: Info do regime (trend_bias, regime)
+            mode: Modo de trading
+            
+        Returns:
+            {
+                'allowed': bool,
+                'reason': str,
+                'suggested_size_pct': float  # % da posição atual para adicionar
+            }
+        """
+        position = self.positions.get(symbol)
+        if not position:
+            return {'allowed': False, 'reason': 'Posição não encontrada'}
+        
+        # Configuração por modo
+        pyramid_config = {
+            "CONSERVADOR": {
+                "max_adds": 1,
+                "min_pnl_for_add": 1.0,  # 1% mínimo
+                "add_size_pct": 0.3,     # 30% da posição atual
+            },
+            "BALANCEADO": {
+                "max_adds": 2,
+                "min_pnl_for_add": 0.5,  # 0.5% mínimo
+                "add_size_pct": 0.5,     # 50% da posição atual
+            },
+            "AGRESSIVO": {
+                "max_adds": 3,
+                "min_pnl_for_add": 0.3,  # 0.3% mínimo
+                "add_size_pct": 0.5,     # 50% da posição atual
+            },
+        }
+        
+        config = pyramid_config.get(mode, pyramid_config["BALANCEADO"])
+        
+        # Verifica número de adds anteriores
+        adds_count = position.extra_metadata.get('pyramid_adds', 0)
+        if adds_count >= config['max_adds']:
+            return {
+                'allowed': False, 
+                'reason': f"Limite de adds atingido ({adds_count}/{config['max_adds']})"
+            }
+        
+        # Verifica PnL atual
+        pnl_pct = position.get_unrealized_pnl_pct(current_price)
+        if pnl_pct < config['min_pnl_for_add']:
+            return {
+                'allowed': False,
+                'reason': f"PnL ({pnl_pct:.2f}%) abaixo do mínimo ({config['min_pnl_for_add']}%)"
+            }
+        
+        # Verifica regime
+        regime = regime_info.get('regime', 'RANGE_CHOP')
+        trend_bias = regime_info.get('trend_bias', 'neutral')
+        
+        if regime in ['RANGE_CHOP', 'LOW_VOL_DRIFT', 'PANIC_HIGH_VOL']:
+            return {
+                'allowed': False,
+                'reason': f"Regime {regime} não permite pyramiding"
+            }
+        
+        # Verifica alinhamento com trend_bias
+        if position.side == 'long' and trend_bias != 'long':
+            return {
+                'allowed': False,
+                'reason': f"trend_bias={trend_bias} não alinhado com posição LONG"
+            }
+        
+        if position.side == 'short' and trend_bias != 'short':
+            return {
+                'allowed': False,
+                'reason': f"trend_bias={trend_bias} não alinhado com posição SHORT"
+            }
+        
+        # APROVADO!
+        logger.info(
+            f"[PYRAMID] ✅ {symbol}: Oportunidade de add! "
+            f"PnL={pnl_pct:.2f}%, trend_bias={trend_bias}, adds={adds_count}/{config['max_adds']}"
+        )
+        
+        return {
+            'allowed': True,
+            'reason': f"Alinhado com tendência, PnL={pnl_pct:.2f}%",
+            'suggested_size_pct': config['add_size_pct'],
+            'current_adds': adds_count,
+            'max_adds': config['max_adds']
+        }
+    
+    def execute_pyramid_add(self, symbol: str, add_size: float, new_entry_price: float):
+        """
+        Executa o add de posição (pyramiding).
+        Atualiza tamanho, preço médio e contador de adds.
+        """
+        position = self.positions.get(symbol)
+        if not position:
+            logger.error(f"[PYRAMID] Posição {symbol} não encontrada para add")
+            return
+        
+        old_size = position.size
+        old_entry = position.entry_price
+        
+        # Calcula novo preço médio
+        new_size = old_size + add_size
+        avg_entry = (old_entry * old_size + new_entry_price * add_size) / new_size
+        
+        # Atualiza posição
+        position.size = new_size
+        position.entry_price = avg_entry
+        
+        # Incrementa contador de adds
+        position.extra_metadata['pyramid_adds'] = position.extra_metadata.get('pyramid_adds', 0) + 1
+        
+        logger.info(
+            f"[PYRAMID] 📈 {symbol} ADD executado! "
+            f"Size: {old_size:.4f} → {new_size:.4f} | "
+            f"Entry: ${old_entry:.2f} → ${avg_entry:.2f} | "
+            f"Adds: {position.extra_metadata['pyramid_adds']}"
+        )
+    
+    def calculate_trailing_stop(self,
+                                 symbol: str,
+                                 current_price: float,
+                                 market_context: dict,
+                                 trailing_type: str = "EMA") -> dict:
+        """
+        Calcula novo trailing stop baseado no tipo.
+        
+        Tipos de trailing:
+        - "EMA": Trailing pela EMA21 com offset
+        - "STRUCTURE": Trailing pelo último swing low/high
+        - "ATR": Trailing por múltiplo do ATR
+        
+        Args:
+            symbol: Símbolo
+            current_price: Preço atual
+            market_context: Contexto com indicadores
+            trailing_type: Tipo de trailing
+            
+        Returns:
+            {
+                'new_stop': float ou None,
+                'reason': str
+            }
+        """
+        position = self.positions.get(symbol)
+        if not position:
+            return {'new_stop': None, 'reason': 'Posição não encontrada'}
+        
+        current_stop = position.stop_loss_price
+        indicators = market_context.get('indicators', {})
+        
+        # === TRAILING POR EMA ===
+        if trailing_type == "EMA":
+            ema21 = indicators.get('ema_21') or indicators.get('ema21')
+            
+            if not ema21:
+                return {'new_stop': None, 'reason': 'EMA21 não disponível'}
+            
+            # Offset de 0.3% abaixo/acima da EMA
+            offset_pct = 0.003
+            
+            if position.side == 'long':
+                # Stop abaixo da EMA21
+                candidate = ema21 * (1 - offset_pct)
+                
+                # Só move se for ACIMA do stop atual (protege mais lucro)
+                if candidate > current_stop and current_price > ema21:
+                    return {
+                        'new_stop': candidate,
+                        'reason': f"Trailing EMA21: ${candidate:.2f}"
+                    }
+            else:
+                # Stop acima da EMA21
+                candidate = ema21 * (1 + offset_pct)
+                
+                # Só move se for ABAIXO do stop atual
+                if candidate < current_stop and current_price < ema21:
+                    return {
+                        'new_stop': candidate,
+                        'reason': f"Trailing EMA21: ${candidate:.2f}"
+                    }
+        
+        # === TRAILING POR ATR ===
+        elif trailing_type == "ATR":
+            atr = indicators.get('atr') or indicators.get('atr_14')
+            
+            if not atr:
+                # Fallback: usa 1.5% do preço como proxy
+                atr = current_price * 0.015
+            
+            # 2x ATR de distância
+            distance = atr * 2
+            
+            if position.side == 'long':
+                candidate = current_price - distance
+                if candidate > current_stop:
+                    return {
+                        'new_stop': candidate,
+                        'reason': f"Trailing ATR: ${candidate:.2f}"
+                    }
+            else:
+                candidate = current_price + distance
+                if candidate < current_stop:
+                    return {
+                        'new_stop': candidate,
+                        'reason': f"Trailing ATR: ${candidate:.2f}"
+                    }
+        
+        # === TRAILING POR ESTRUTURA (Swing) ===
+        elif trailing_type == "STRUCTURE":
+            # Usa últimos swing lows/highs do contexto
+            candles = market_context.get('candles', [])
+            
+            if len(candles) < 10:
+                return {'new_stop': None, 'reason': 'Poucos candles para análise de estrutura'}
+            
+            # Encontra último swing low/high nos últimos 20 candles
+            recent = candles[-20:] if len(candles) >= 20 else candles
+            
+            if position.side == 'long':
+                # Busca swing lows
+                lows = [c.get('low', 0) for c in recent]
+                swing_low = min(lows) if lows else None
+                
+                if swing_low:
+                    # Offset abaixo do swing
+                    candidate = swing_low * 0.998
+                    if candidate > current_stop:
+                        return {
+                            'new_stop': candidate,
+                            'reason': f"Trailing Swing Low: ${candidate:.2f}"
+                        }
+            else:
+                # Busca swing highs
+                highs = [c.get('high', 0) for c in recent]
+                swing_high = max(highs) if highs else None
+                
+                if swing_high:
+                    # Offset acima do swing
+                    candidate = swing_high * 1.002
+                    if candidate < current_stop:
+                        return {
+                            'new_stop': candidate,
+                            'reason': f"Trailing Swing High: ${candidate:.2f}"
+                        }
+        
+        return {'new_stop': None, 'reason': 'Nenhuma atualização necessária'}
+    
+    # ========================================================================
+    # FIM [Claude Trend Refactor]
+    # ========================================================================
+    
     def check_stops(self, current_prices: Dict[str, float]) -> List[Dict[str, str]]:
         """
         Verifica stops de todas as posições
