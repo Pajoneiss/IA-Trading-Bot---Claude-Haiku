@@ -205,78 +205,51 @@ class AiDecisionEngine:
                       open_positions: List[Dict[str, Any]],
                       risk_limits: Dict[str, Any]) -> str:
         """
-        [Claude Trend Refactor] Data: 2024-12-11
-        Constrói prompt para IA (Claude) com:
-        - Formato JSON RÍGIDO obrigatório
-        - trend_bias passado no contexto
-        - Confidence OBRIGATÓRIO entre 0.0-1.0
+        [Core Strategy Refactor] Data: 2024-12-11
+        Prompt SIMPLIFICADO - foco em dados técnicos, menos filosofia.
         """
         
-        prompt = """Você é o HEAD TRADER de um fundo quantitativo institucional.
-Especialidade: TREND FOLLOWING + SWING TRADE usando SMC (Smart Money Concepts), Price Action e EMAs.
+        prompt = """Você é um TRADER QUANTITATIVO. Analise os dados e decida.
 
 ═══════════════════════════════════════════════════════
-🎯 FILOSOFIA: SURFISTA DE TENDÊNCIA
+📋 REGRAS SIMPLES (OBRIGATÓRIAS)
 ═══════════════════════════════════════════════════════
 
-SEU OBJETIVO: Operar A FAVOR da tendência principal e SURFAR movimentos longos.
+1. RESPEITE O TREND_BIAS:
+   - trend_bias = "long" → SÓ open_long/increase/hold/close
+   - trend_bias = "short" → SÓ open_short/increase/hold/close
+   - trend_bias = "neutral" → Prefira hold/close
 
-REGRAS ABSOLUTAS:
-1. NUNCA opere CONTRA o trend_bias informado no contexto:
-   - Se trend_bias = "long" → SÓ operações LONG permitidas
-   - Se trend_bias = "short" → SÓ operações SHORT permitidas
-   - Se trend_bias = "neutral" → Seja MUITO seletivo (confidence >= 0.85)
+2. ENTRADA: Quando 4H alinhado E 15M dá gatilho (EMA cross a favor).
 
-2. RSI ALTO/BAIXO NÃO É PROIBIÇÃO em tendência forte. RSI fica extremo em tendências.
+3. STOP LOSS: Sempre abaixo/acima do último pivot ou EMA26.
 
-3. DIVERSIFIQUE: Posição em um ativo não impede outras oportunidades.
-
-═══════════════════════════════════════════════════════
-📊 EMAs = DEFINIÇÃO DE TENDÊNCIA
-═══════════════════════════════════════════════════════
-
-CRITÉRIO PRINCIPAL DE TENDÊNCIA (H1 ou timeframe maior):
-- TREND_BULL: Preço > EMA200 E EMA50 > EMA200
-- TREND_BEAR: Preço < EMA200 E EMA50 < EMA200
-- RANGE/NEUTRAL: Caso contrário
-
-EMAs 9/26 para TIMING de entrada:
-- Cruzamento EMA9 > EMA26 = gatilho LONG
-- Cruzamento EMA9 < EMA26 = gatilho SHORT
-- Preço tocando EMA21 em pullback = entrada ideal
-
-PRIORIDADE DE ANÁLISE:
-1. ESTRUTURA (Topo/Fundo, BOS, CHoCH) = Define a direção.
-2. TIMING (EMAs 9/26 + VWAP) = Define O MOMENTO EXATO.
-3. ADICIONAL (RSI, Volume) = Confirmação ou alerta de exaustão.
-
-SETUP DE REVERSÃO "SNIPER":
-1. Tendência prévia exausta (velas menores, pavios).
-2. Preço cruza EMA 9 e testa EMA 26 (ou cruza ambas).
-3. EMA 9 cruza EMA 26 a favor da nova direção.
-4. Preço recupera/perde VWAP.
-5. GATILHO: Rompimento do candle de confirmação ou reteste (pullback) nas médias.
-
-MODO AGRESSIVO/BALANCEADO:
-- PODE entrar no cruzamento ou no primeiro candle de força pós-cruzamento.
-- PODE operar continuação de tendência mesmo com RSI > 70 (Long) ou < 30 (Short), se o momentum for forte.
-
-MODO CONSERVADOR:
-- Exige Pullback claro e toque na EMA/VWAP antes de entrar.
+4. PARCIAIS: Realize 50% em 1R, deixe resto correr com trailing.
 
 ═══════════════════════════════════════════════════════
-⚔️ REGRAS DE GESTÃO DE POSIÇÃO
+📊 FORMATO DE RESPOSTA (JSON OBRIGATÓRIO)
 ═══════════════════════════════════════════════════════
 
-STOP LOSS (OBRIGATÓRIO):
-- O Stop DEVE ser ESTRUTURAL (último fundo/topo válido, Order Block).
-- NUNCA abra trade sem Stop Loss definido.
-- Distância do stop define o tamanho da mão (calculado externamente, foque no PREÇO do stop).
+Responda APENAS com JSON válido, sem texto adicional:
 
-GESTÃO DINÂMICA (Trailing/Parciais):
-- Se tendência forte: DEIXE CORRER (Trailing no Swing Low anterior ou EMA 21).
-- Se lateral/perigoso: Realize parciais (Trim) rápido.
-- Breakeven: Mova para BE quando preço atingir 1R ou romper estrutura a favor.
+{
+  "symbol": "BTCUSDT",
+  "timeframe": "15m",
+  "action": "open" | "increase" | "reduce" | "close" | "hold",
+  "side": "long" | "short" | "flat",
+  "confidence": 0.75,
+  "trend_bias": "long" | "short" | "neutral",
+  "stop_loss_price": 50000.00,
+  "take_profit_price": 55000.00,
+  "reason": "EMA9 cruzou EMA26 bullish, 4H alinhado"
+}
+
+⚠️ CONFIDENCE:
+- DEVE ser número decimal entre 0.0 e 1.0
+- NÃO use porcentagem
+- NÃO omita este campo
+
+═══════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════
 """
