@@ -1045,11 +1045,15 @@ class HyperliquidBot:
                         # Normaliza 15m também
                         candles_15m_norm = self.technical_analysis.normalize_candles(candles_15m, logger_instance=self.logger)
                         
+                        # [Core Strategy] Passa ema_context para detectar fresh cross
+                        ema_context_for_regime = context.get('ema_timing')
+                        
                         regime_info = self._regime_analyzer.evaluate(
                             symbol=pair,
                             candles_m15=candles_15m_norm or [],
                             candles_h1=candles_h1,
-                            market_intel=None  # TODO: integrar market intelligence
+                            market_intel=None,  # TODO: integrar market intelligence
+                            ema_context=ema_context_for_regime
                         )
                         
                         context['regime_info'] = regime_info
@@ -2334,8 +2338,8 @@ def main():
         
         # ===== CONFIGURAÇÕES ANTI-OVERTRADING =====
         'action_cooldown_seconds': int(os.getenv('ACTION_COOLDOWN_SECONDS', '300')),  # 5 min entre ações no mesmo ativo
-        'min_confidence_open': float(os.getenv('MIN_CONFIDENCE_OPEN', '0.75')),       # Confiança mín para abrir
-        'min_confidence_adjust': float(os.getenv('MIN_CONFIDENCE_ADJUST', '0.82')),   # Confiança mín para increase/decrease
+        'min_confidence_open': float(os.getenv('MIN_CONFIDENCE_OPEN', '0.65')),       # Confiança mín para abrir (reduzido de 0.75)
+        'min_confidence_adjust': float(os.getenv('MIN_CONFIDENCE_ADJUST', '0.75')),   # Confiança mín para increase/decrease (reduzido de 0.82)
         'max_adjustments_per_iteration': int(os.getenv('MAX_ADJUSTMENTS_PER_ITERATION', '1')),  # Máx 1 ajuste por ciclo
         'openai_analysis_interval': int(os.getenv('OPENAI_ANALYSIS_INTERVAL', '5')),  # Analisa 1 a cada N iterações (reduz rate limit)
         
