@@ -1,7 +1,7 @@
 # 🏄 PATCH TREND FOLLOWER - Documentação
 
 **Data**: 2024-12-11  
-**Versão**: Claude Trend Refactor v1.0  
+**Versão**: Claude Trend Refactor v2.0  
 **Autor**: Claude (via Antigravity)
 
 ---
@@ -10,9 +10,10 @@
 
 Este patch transforma o bot em um **surfista de tendência** que:
 - Opera majoritariamente A FAVOR da tendência principal
-- Bloqueia trades contra-tendência
+- Bloqueia trades contra-tendência em TODOS os níveis
 - Usa pyramiding controlado para aumentar posições vencedoras
 - Implementa trailing stop inteligente
+- Protege posições SWING contra scalps conflitantes
 - Ajusta filtros para serem contexto-sensíveis
 
 ---
@@ -28,27 +29,10 @@ Módulo que implementa regras DURAS de alinhamento com tendência.
 - Em neutral, exige confidence mais alta
 - Configurável por modo (Conservador/Balanceado/Agressivo)
 
-**Uso:**
-```python
-from bot.phase3 import TrendGuard
-
-trend_guard = TrendGuard(mode_manager=self.mode_manager)
-result = trend_guard.evaluate(decision, regime_info, confidence)
-
-if not result.allowed:
-    print(f"BLOQUEADO: {result.reason}")
-```
-
 ---
 
 ### 2. `bot/phase3/market_regime.py` (MODIFICADO)
 Adicionada análise de tendência por EMAs como alternativa mais tolerante.
-
-**Mudanças:**
-- Novo método `_analyze_trend_by_ema()` usando EMA50/EMA200
-- Fallback `_analyze_trend_by_short_ema()` com EMA21/EMA50
-- Combina análise EMA com swing analysis original
-- Prioriza EMA por ser mais estável
 
 **Critérios de tendência:**
 ```
@@ -60,53 +44,92 @@ NEUTRAL: Caso contrário
 ---
 
 ### 3. `bot/phase2/decision_parser.py` (MODIFICADO)
-Melhorias no parse de respostas da IA para evitar confidence = 0.0.
-
-**Mudanças:**
 - Default confidence = 0.70 (era 0.0)
-- Limpeza mais agressiva de markdown no JSON
 - Extrai trend_bias da resposta
-- Tratamento de confidence como string ("75%" → 0.75)
-- Warning quando confidence muito baixo
+- Tratamento de confidence como string
 
 ---
 
 ### 4. `bot/ai_decision.py` (MODIFICADO)
-Prompt reformulado com foco em trend following.
-
-**Mudanças:**
 - Nova filosofia: "SURFISTA DE TENDÊNCIA"
-- Passa trend_bias explicitamente no contexto
-- Formato JSON mais rígido com exemplos claros
-- Regras detalhadas para o campo confidence
-- Lembrete para alinhar side com trend_bias
+- Passa trend_bias no contexto
+- Formato JSON mais rígido
 
 ---
 
 ### 5. `bot/phase2/quality_gate.py` (MODIFICADO)
-Integração com TrendGuard e filtros contexto-sensíveis.
-
-**Mudanças:**
-- CRITÉRIO 0.5: Verificação TrendGuard antes de outros filtros
-- ChopFilter mais tolerante quando há tendência clara
-- Scalp só bloqueado em chop SE não houver tendência
-- Logs melhorados com trend_bias
+- Integração com TrendGuard
+- Filtros contexto-sensíveis à tendência
 
 ---
 
 ### 6. `bot/position_manager.py` (MODIFICADO)
-Pyramiding controlado e trailing stop avançado.
-
-**Novos métodos:**
 - `check_pyramid_opportunity()` - Verifica se pode fazer add
-- `execute_pyramid_add()` - Executa o add atualizando preço médio
-- `calculate_trailing_stop()` - Trailing por EMA, ATR ou Structure
+- `execute_pyramid_add()` - Executa o pyramiding
+- `calculate_trailing_stop()` - Trailing por EMA/ATR/Structure
 
-**Regras de Pyramiding:**
-- Posição deve estar em lucro (min 0.3-1% dependendo do modo)
-- trend_bias deve estar alinhado
-- Regime deve ser de tendência
-- Limite de adds: 1-3 dependendo do modo
+---
+
+### 7. `bot_hyperliquid.py` (MODIFICADO - v2.0)
+
+**Novas integrações:**
+
+1. **Cálculo de `regime_info` no contexto de mercado:**
+   - Cada par agora tem `regime_info` com `trend_bias`
+   - Logs de regime para cada símbolo
+
+2. **Filtragem de triggers por tendência:**
+   - Triggers contra-tendência são bloqueados ANTES de chamar a IA
+   - Economia de chamadas de API
+
+3. **Integração de Pyramiding:**
+   - Verifica oportunidade de add a cada iteração
+   - Executa add automaticamente quando permitido
+
+4. **Trailing Stop avançado:**
+   - Chamado automaticamente para posições PROMOTED_TO_SWING
+   - Usa EMA21 como referência
+
+5. **Proteção Swing vs Scalp:**
+   - Se há posição SWING aberta, scalp só é permitido na mesma direção
+   - Evita que scalp destrua swing lucrativo
+
+---
+
+## 🔄 Fluxo Atualizado
+
+```
+1. Coleta de preços e candles
+2. Para cada par:
+   a. Monta contexto básico
+   b. Calcula regime_info com trend_bias  ← NOVO
+   c. Adiciona ao contexto
+3. Gestão de posições abertas:
+   a. manage_position (parciais, promoção)
+   b. check_pyramid_opportunity  ← NOVO
+   c. calculate_trailing_stop  ← NOVO
+4. Market Scanner gera triggers
+5. Filtra triggers contra-tendência  ← NOVO
+6. Para triggers aprovados:
+   a. Chama IA (Claude/OpenAI)
+   b. TrendGuard verifica alinhamento  ← NOVO
+   c. QualityGate avalia
+   d. Executa se aprovado
+7. Proteção Swing vs Scalp  ← NOVO
+```
+
+---
+
+## 📊 Logs Esperados
+
+```
+[REGIME] BTCUSDT: regime=TREND_BULL, trend_bias=long, volatility=normal
+[TREND FILTER] ✅ Trigger BTCUSDT bullish aprovado (trend_bias=long)
+[TREND FILTER] 🚫 Trigger ETHUSDT bearish BLOQUEADO: Short bloqueado em tendência LONG
+[TREND GUARD] ✅ BTCUSDT aprovado: trend_bias=long, regime=TREND_BULL
+[PYRAMID] ✅ BTCUSDT: Oportunidade de add detectada! PnL=1.5%
+[SWING PROTECTION] 🛡️ Scalp BTCUSDT short BLOQUEADO - Posição SWING long aberta
+```
 
 ---
 
@@ -130,63 +153,22 @@ Pyramiding controlado e trailing stop avançado.
 
 ---
 
-## 🧪 Como Testar
+## 🚀 Resumo do que foi feito
 
-1. **Verificar sintaxe:**
+✅ **PASSO 1**: Integrar cálculo de `regime_info` no contexto  
+✅ **PASSO 2**: Filtrar triggers contra-tendência no scanner  
+✅ **PASSO 3**: Integrar pyramiding e trailing no loop de gestão  
+✅ **PASSO 4**: Proteção swing vs scalp  
+✅ **PASSO 5**: Logs detalhados com trend_bias  
+
+---
+
+## 🔧 Deploy
+
+O código já foi enviado para o GitHub. Se você usa Railway com auto-deploy, já deve estar atualizando!
+
+Caso contrário:
 ```bash
-python3 -m py_compile bot/phase3/trend_guard.py
-python3 -m py_compile bot/phase3/market_regime.py
-python3 -m py_compile bot/phase2/decision_parser.py
-python3 -m py_compile bot/phase2/quality_gate.py
-python3 -m py_compile bot/position_manager.py
-python3 -m py_compile bot/ai_decision.py
+git pull origin main
+# Railway redeploy manual
 ```
-
-2. **Rodar em paper trading:**
-- Observar logs de `[TREND GUARD]`
-- Verificar se trades contra-tendência são bloqueados
-- Checar se confidence está vindo corretamente (não 0.0)
-
-3. **Logs esperados:**
-```
-[TREND GUARD] ✅ BTCUSDT aprovado: trend_bias=long, regime=TREND_BULL
-[TREND GUARD] 🚫 ETHUSDT BLOQUEADO: open_short contra tendência LONG
-[QUALITY GATE] Chop tolerado em BTCUSDT por tendência long
-[PARSER] ✅ Open decision parsed: BTCUSDT long swing conf=0.78 trend_bias=long
-[PYRAMID] ✅ BTCUSDT: Oportunidade de add! PnL=1.5%, trend_bias=long
-```
-
----
-
-## 🔄 Rollback
-
-Se precisar reverter, os arquivos originais podem ser restaurados do git:
-```bash
-git checkout -- bot/phase3/market_regime.py
-git checkout -- bot/phase2/decision_parser.py
-git checkout -- bot/phase2/quality_gate.py
-git checkout -- bot/position_manager.py
-git checkout -- bot/ai_decision.py
-rm bot/phase3/trend_guard.py
-```
-
----
-
-## 📝 Próximos Passos (TODO)
-
-1. [ ] Implementar proteção swing vs scalp (evitar que scalp destrua swing)
-2. [ ] Adicionar métricas de performance por tendência
-3. [ ] Dashboard de visualização de trend_bias em tempo real
-4. [ ] Backtesting com as novas regras
-
----
-
-## 🚀 Conclusão
-
-O bot agora está configurado para ser um **trend follower consistente**:
-- ✅ Opera a favor da tendência
-- ✅ Bloqueia trades contra-tendência
-- ✅ Permite pyramiding quando alinhado
-- ✅ Trailing stop para proteger lucros
-- ✅ Filtros menos agressivos em tendência clara
-- ✅ Confidence com defaults seguros
