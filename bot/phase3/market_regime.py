@@ -53,7 +53,8 @@ class MarketRegimeAnalyzer:
                 symbol: str,
                 candles_m15: List[Dict[str, Any]],
                 candles_h1: List[Dict[str, Any]],
-                market_intel: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                market_intel: Optional[Dict[str, Any]] = None,
+                ema_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Avalia regime de mercado atual
         
@@ -62,6 +63,7 @@ class MarketRegimeAnalyzer:
             candles_m15: Candles 15m normalizados
             candles_h1: Candles 1h normalizados
             market_intel: Market Intelligence (Fear & Greed, etc)
+            ema_context: Contexto EMA do EMACrossAnalyzer (para fresh cross detection)
             
         Returns:
             {
@@ -98,7 +100,8 @@ class MarketRegimeAnalyzer:
                 trend_h1=trend_h1,
                 trend_m15=trend_m15,
                 mi_info=mi_info,
-                symbol=symbol
+                symbol=symbol,
+                ema_context=ema_context
             )
             
             # Log do regime
@@ -411,17 +414,52 @@ class MarketRegimeAnalyzer:
                         trend_h1: Dict,
                         trend_m15: Dict,
                         mi_info: Dict,
-                        symbol: str) -> Dict[str, Any]:
-        """Classifica regime baseado em todos os fatores"""
+                        symbol: str,
+                        ema_context: Dict = None) -> Dict[str, Any]:
+        """
+        Classifica regime baseado em todos os fatores.
+        
+        [Core Strategy Refactor] Agora considera:
+        - Fresh EMA cross como sinal forte (mesmo sem strength alto)
+        - Threshold de strength reduzido de 0.6 para 0.4
+        - Cross recente no 30m/15m aumenta probabilidade de trend
+        """
         
         vol_level = volatility_info.get('level', 'normal')
         h1_direction = trend_h1.get('direction', 'neutral')
         m15_direction = trend_m15.get('direction', 'neutral')
         h1_strength = trend_h1.get('strength', 0)
+        m15_strength = trend_m15.get('strength', 0)
         fg_level = mi_info.get('fg_level', 'neutral')
         risk_off = mi_info.get('risk_off', False)
         
         notes = []
+        
+        # [NEW] Detecta fresh cross do EMA context
+        has_fresh_bull_cross = False
+        has_fresh_bear_cross = False
+        if ema_context:
+            states = ema_context.get('states', {})
+            for tf in ['30m', '1h']:
+                state = states.get(tf, {})
+                if isinstance(state, dict):
+                    cross = state.get('last_cross_direction')
+                    bars = state.get('bars_since_last_cross', 99)
+                    is_fresh = state.get('is_fresh_cross', False)
+                elif hasattr(state, 'last_cross_direction'):
+                    cross = state.last_cross_direction
+                    bars = state.bars_since_last_cross or 99
+                    is_fresh = state.is_fresh_cross
+                else:
+                    continue
+                
+                # Cross é "fresh" se < 8 barras
+                if cross == 'bull' and (is_fresh or bars < 8):
+                    has_fresh_bull_cross = True
+                    notes.append(f"Fresh bull cross {tf}")
+                elif cross == 'bear' and (is_fresh or bars < 8):
+                    has_fresh_bear_cross = True
+                    notes.append(f"Fresh bear cross {tf}")
         
         # PANIC_HIGH_VOL: volatilidade extrema
         if vol_level == 'high' and fg_level in ['extreme_fear', 'extreme_greed']:
@@ -430,29 +468,37 @@ class MarketRegimeAnalyzer:
             risk_off = True
             notes.append(f"Volatilidade alta ({volatility_info.get('atr_pct', 0):.2f}%) + {fg_level}")
         
-        # LOW_VOL_DRIFT: baixa volatilidade
-        elif vol_level == 'low' and h1_direction == 'neutral':
+        # LOW_VOL_DRIFT: baixa volatilidade sem direção
+        elif vol_level == 'low' and h1_direction == 'neutral' and not has_fresh_bull_cross and not has_fresh_bear_cross:
             regime = 'LOW_VOL_DRIFT'
             trend_bias = 'neutral'
             notes.append(f"Volatilidade baixa + sem tendência clara")
         
         # TREND_BULL: tendência de alta
-        elif h1_direction == 'bullish' and m15_direction in ['bullish', 'neutral'] and h1_strength > 0.6:
+        # [CHANGED] Threshold reduzido de 0.6 para 0.4, OU fresh bull cross
+        elif (h1_direction == 'bullish' and m15_direction in ['bullish', 'neutral'] and h1_strength > 0.4) or \
+             (has_fresh_bull_cross and h1_direction != 'bearish'):
             regime = 'TREND_BULL'
             trend_bias = 'long'
-            notes.append(f"H1 bullish (strength={h1_strength:.2f}) + 15m alinhado")
+            if has_fresh_bull_cross:
+                notes.append(f"Fresh bull cross detectado!")
+            notes.append(f"H1 {h1_direction} (strength={h1_strength:.2f})")
         
         # TREND_BEAR: tendência de baixa
-        elif h1_direction == 'bearish' and m15_direction in ['bearish', 'neutral'] and h1_strength > 0.6:
+        # [CHANGED] Threshold reduzido de 0.6 para 0.4, OU fresh bear cross
+        elif (h1_direction == 'bearish' and m15_direction in ['bearish', 'neutral'] and h1_strength > 0.4) or \
+             (has_fresh_bear_cross and h1_direction != 'bullish'):
             regime = 'TREND_BEAR'
             trend_bias = 'short'
-            notes.append(f"H1 bearish (strength={h1_strength:.2f}) + 15m alinhado")
+            if has_fresh_bear_cross:
+                notes.append(f"Fresh bear cross detectado!")
+            notes.append(f"H1 {h1_direction} (strength={h1_strength:.2f})")
         
-        # RANGE_CHOP: sem direção
+        # RANGE_CHOP: sem direção clara
         else:
             regime = 'RANGE_CHOP'
             trend_bias = 'neutral'
-            notes.append(f"H1 {h1_direction}, 15m {m15_direction}, sem tendência clara")
+            notes.append(f"H1 {h1_direction}, 15m {m15_direction}, strength={h1_strength:.2f}")
         
         # Adiciona info de volatilidade
         notes.append(f"vol={vol_level}")
