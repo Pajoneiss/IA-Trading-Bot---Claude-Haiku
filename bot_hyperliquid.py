@@ -1356,10 +1356,18 @@ class HyperliquidBot:
         # ================================================
         
         # === SWING (Claude) via TRIGGERS ===
+        # [CORE STRATEGY INTEGRATION] Prioriza triggers CORE_SETUP
         swing_decisions = []
         triggers_processed_swing = 0
         
-        for trigger in swing_triggers:
+        # Separa triggers por tipo (CORE_SETUP tem prioridade)
+        core_triggers = [t for t in swing_triggers if t.trigger_type == "CORE_SETUP"]
+        other_triggers = [t for t in swing_triggers if t.trigger_type != "CORE_SETUP"]
+        
+        # Processa CORE_SETUP primeiro
+        ordered_triggers = core_triggers + other_triggers
+        
+        for trigger in ordered_triggers:
             if triggers_processed_swing >= 3:  # Limite por iteração
                 self.logger.debug("[AI BUDGET] Limite de triggers SWING por iteração atingido")
                 break
@@ -1368,14 +1376,38 @@ class HyperliquidBot:
             if not self.ai_budget.can_call_claude(trigger.trigger_type, trigger.symbol, trigger.timeframe):
                 continue  # Bloqueado por limite/cooldown
             
-            self.logger.info(f"[AI CALL][SWING] Chamando Claude para {trigger.symbol} {trigger.timeframe} "
-                           f"por {trigger.trigger_type} (dir={trigger.direction_hint})")
+            # [CORE STRATEGY] Log diferenciado para CORE_SETUP
+            if trigger.trigger_type == "CORE_SETUP":
+                self.logger.info(
+                    f"[AI CALL][CORE] 🎯 Chamando Claude para {trigger.symbol} - "
+                    f"CORE SETUP: {trigger.details}"
+                )
+            else:
+                self.logger.info(
+                    f"[AI CALL][SWING] Chamando Claude para {trigger.symbol} {trigger.timeframe} "
+                    f"por {trigger.trigger_type} (dir={trigger.direction_hint})"
+                )
             
             try:
                 # Filtra contexto para o símbolo do trigger
                 symbol_contexts = [ctx for ctx in market_contexts if ctx.get('symbol') == trigger.symbol]
                 if not symbol_contexts:
                     symbol_contexts = market_contexts  # Fallback: todos os contextos
+                
+                # [CORE STRATEGY] Adiciona info do core ao contexto para a IA
+                if trigger.trigger_type == "CORE_SETUP" and symbol_contexts:
+                    ctx = symbol_contexts[0]
+                    core_analysis = ctx.get('core_analysis', {})
+                    # Enriquece o contexto com dados do CORE
+                    ctx['core_setup_info'] = {
+                        'setup_type': core_analysis.get('setup_type'),
+                        'setup_reason': core_analysis.get('setup_reason'),
+                        'trend_bias': core_analysis.get('trend_bias'),
+                        'daily_climate': core_analysis.get('daily_climate'),
+                        'h1_confirmation': core_analysis.get('h1_confirmation'),
+                        'size_multiplier': core_analysis.get('size_multiplier', 1.0),
+                        'confidence_adjustment': core_analysis.get('confidence_adjustment', 0.0)
+                    }
                 
                 all_decisions = self.ai_engine.swing_engine.decide(
                     market_contexts=symbol_contexts,
@@ -1389,7 +1421,21 @@ class HyperliquidBot:
                     if dec.get('action') not in ('hold', 'skip'):
                         dec['source'] = 'claude_swing'
                         dec['style'] = 'swing'
-                        dec['trigger_type'] = trigger.trigger_type  # PATCH v3.0: adiciona trigger
+                        dec['trigger_type'] = trigger.trigger_type
+                        
+                        # [CORE STRATEGY] Adiciona info do core à decisão
+                        if trigger.trigger_type == "CORE_SETUP":
+                            dec['core_setup'] = True
+                            dec['core_setup_reason'] = trigger.details
+                        
+                        # Log da decisão
+                        self.logger.info(
+                            f"[AI_DECISION] symbol={dec.get('symbol')} "
+                            f"action={dec.get('action')} direction={dec.get('direction')} "
+                            f"confidence={dec.get('confidence', 0):.2f} "
+                            f"trigger={trigger.trigger_type}"
+                        )
+                        
                         swing_decisions.append(dec)
                 
                 # Registra chamada no budget
@@ -1980,6 +2026,17 @@ class HyperliquidBot:
             except Exception as log_err:
                 self.logger.warning(f"[TRADE LOGGER] Erro ao logar trade: {log_err}")
             
+            # [CORE STRATEGY] Log de execução padronizado
+            risk_pct = decision.get('risk_pct', 2.5)
+            trigger_type = decision.get('trigger_type', 'unknown')
+            core_setup = decision.get('core_setup', False)
+            
+            self.logger.info(
+                f"[TRADE_EXEC] symbol={symbol} mode=PAPER_ONLY side={side.upper()} "
+                f"type=OPEN size={size:.6f} risk={risk_pct:.1f}% @ price={current_price:.2f} "
+                f"trigger={trigger_type} core_setup={core_setup}"
+            )
+            
             return True
             
         # Modo LIVE
@@ -2076,6 +2133,17 @@ class HyperliquidBot:
                     )
                 except Exception as log_err:
                     self.logger.warning(f"[TRADE LOGGER] Erro ao logar trade: {log_err}")
+                
+                # [CORE STRATEGY] Log de execução padronizado
+                risk_pct = decision.get('risk_pct', 2.5)
+                trigger_type = decision.get('trigger_type', 'unknown')
+                core_setup = decision.get('core_setup', False)
+                
+                self.logger.info(
+                    f"[TRADE_EXEC] symbol={symbol} mode=LIVE side={side.upper()} "
+                    f"type=OPEN size={size:.6f} risk={risk_pct:.1f}% @ price={current_price:.2f} "
+                    f"trigger={trigger_type} core_setup={core_setup}"
+                )
                 
                 # 📱 Notifica via Telegram com informações completas
                 self.telegram.notify_position_opened(
