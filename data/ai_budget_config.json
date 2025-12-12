@@ -9,7 +9,7 @@
         "min_minutes_between_openai_calls": 10
     },
     "swing": {
-        "symbols": ["BTC", "ETH"],
+        "symbols": ["BTC", "ETH", "SOL", "DOGE", "XRP", "ADA", "AVAX", "LINK", "ZEC", "ONDO", "HBAR", "SEI"],
         "timeframes": ["1d", "4h", "1h"],
         "enable_daily_ema_shift": false
     },
@@ -22,9 +22,14 @@
         "pullback_ema_distance_pct": 1.5,
         "range_lookback_bars": 20,
         "max_triggers_per_iteration": {
-            "swing": 3,
+            "swing": 5,
             "scalp": 5
         }
+    },
+    "paper_mode": {
+        "allow_neutral_trend": true,
+        "risk_multiplier_neutral": 0.5,
+        "min_confidence_override": 0.65
     },
     "logging": {
         "log_prefix": "[AI BUDGET]",
