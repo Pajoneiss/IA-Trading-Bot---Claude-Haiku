@@ -127,6 +127,9 @@ class MarketScanner:
         """
         Varre mercado buscando oportunidades de SWING
         
+        [CORE STRATEGY INTEGRATION] Agora prioriza triggers vindos do CORE MTF!
+        O CORE já fez a análise 1D/4H/1H/15M e marcou setup_valid=True.
+        
         Args:
             market_contexts: Lista de contextos de mercado por símbolo
             ema_contexts: Dict {symbol: EMAContext} do EMA Analyzer
@@ -148,6 +151,42 @@ class MarketScanner:
                 continue
             
             try:
+                # ============================================================
+                # [CORE STRATEGY] PRIORIDADE MÁXIMA: SETUP VÁLIDO DO CORE MTF
+                # ============================================================
+                # O CORE já analisou 1D/4H/1H/15M e detectou setup válido
+                # Este é o trigger PRINCIPAL - os outros são secundários
+                core_analysis = ctx.get('core_analysis', {})
+                if core_analysis.get('has_valid_setup'):
+                    setup_type = core_analysis.get('setup_type', 'none')
+                    setup_reason = core_analysis.get('setup_reason', '')
+                    trend_bias = core_analysis.get('trend_bias', 'neutral')
+                    
+                    # Determina direção baseado no setup_type
+                    if setup_type == 'entry_long':
+                        direction = 'long'
+                    elif setup_type == 'entry_short':
+                        direction = 'short'
+                    else:
+                        direction = None
+                    
+                    trigger = ScanTrigger(
+                        symbol=symbol,
+                        timeframe="15m",  # Gatilho veio do 15M
+                        direction_hint=direction,
+                        trigger_type="CORE_SETUP",  # NOVO! Trigger do Core Strategy
+                        details=f"{setup_type}: {setup_reason}",
+                        priority=0  # Prioridade MÁXIMA (menor = melhor)
+                    )
+                    triggers.append(trigger)
+                    self.log.info(
+                        f"[SCANNER][CORE] ✅ {symbol} CORE_SETUP detectado: "
+                        f"{setup_type} | trend_bias={trend_bias} | {setup_reason}"
+                    )
+                    # Se tem CORE_SETUP, não precisa dos triggers secundários
+                    continue
+                # ============================================================
+                
                 # 1. DAILY EMA SHIFT (desativado por default - 1D é filtro, não gatilho)
                 # Só dispara se enable_daily_ema_shift=true na config
                 if self.enable_daily_ema_shift:
