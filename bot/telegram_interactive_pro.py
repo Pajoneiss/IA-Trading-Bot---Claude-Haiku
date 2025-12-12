@@ -218,6 +218,14 @@ class TelegramInteractivePRO:
             except Exception as e:
                 logger.error(f"[TELEGRAM] Erro em Execução: {e}")
         
+        # GLOBAL_IA: Handler do botão IA (abre menu de conversa/ativação)
+        @self.bot.message_handler(func=lambda m: m.text and (m.text == "🧠 IA" or m.text == "🧠 IA ON"))
+        def handle_ia_button(message):
+            try:
+                self._send_ia_menu(message.chat.id)
+            except Exception as e:
+                logger.error(f"[TELEGRAM] Erro em IA: {e}")
+        
         # === PHASE 4: COMANDOS DE PERFORMANCE ===
         @self.bot.message_handler(commands=['pnl'])
         def handle_pnl_command(message):
@@ -388,6 +396,18 @@ class TelegramInteractivePRO:
                     self._set_execution_mode(call.message.chat.id, "PAPER_ONLY", user_id=call.from_user.id)
                 elif call.data == "exec_mode_shadow":
                     self._set_execution_mode(call.message.chat.id, "SHADOW", user_id=call.from_user.id)
+                
+                # GLOBAL_IA: Callbacks
+                elif call.data == "global_ia_on":
+                    self._set_global_mode(call.message.chat.id, True)
+                elif call.data == "global_ia_off":
+                    self._set_global_mode(call.message.chat.id, False)
+                elif call.data == "global_ia_state":
+                    self._send_global_state(call.message.chat.id)
+                elif call.data == "ia_ask_market":
+                    # Pergunta rápida sobre o mercado
+                    self.bot.send_message(call.message.chat.id, "🧠 Analisando mercado...")
+                    self._handle_ia_chat(call.message.chat.id, "Qual sua visão do mercado agora? O que você está vendo?")
                     
                 self.bot.answer_callback_query(call.id)
             except Exception as e:
@@ -399,6 +419,12 @@ class TelegramInteractivePRO:
         """Teclado com 12 botões sempre visível"""
         is_paused = getattr(self.main_bot, 'paused', False)
         pause_text = "▶️ Retomar" if is_paused else "⏸️ Pausar"
+        
+        # Verifica se está em modo GLOBAL_IA
+        from bot.phase5 import TradingMode
+        mode_manager = getattr(self.main_bot, 'mode_manager', None)
+        is_global = mode_manager and mode_manager.current_mode == TradingMode.GLOBAL_IA
+        global_text = "🧠 IA ON" if is_global else "🧠 IA"
         
         keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
         
@@ -423,9 +449,10 @@ class TelegramInteractivePRO:
             types.KeyboardButton("🛡 Risco")  # Phase 6: Botão de Risco
         )
         
-        # Linha 4: Execução (NOVO)
+        # Linha 4: IA + Execução (NOVO - GLOBAL_IA)
         keyboard.row(
-            types.KeyboardButton("⚙️ Execução")  # PATCH: Botão de modo de execução
+            types.KeyboardButton(global_text),  # Botão para chat/ativar IA
+            types.KeyboardButton("⚙️ Execução")  # Modo de execução
         )
         
         return keyboard
@@ -2232,6 +2259,64 @@ class TelegramInteractivePRO:
             
         except Exception as e:
             logger.error(f"[TELEGRAM] Erro ao alterar modo global: {e}")
+            self.bot.send_message(chat_id, f"❌ Erro: {str(e)}", parse_mode=None)
+    
+    def _send_ia_menu(self, chat_id: int):
+        """Envia menu de interação com a IA"""
+        try:
+            from bot.phase5 import TradingMode
+            
+            mode_manager = getattr(self.main_bot, 'mode_manager', None)
+            current_mode = mode_manager.current_mode if mode_manager else TradingMode.BALANCEADO
+            is_global = current_mode == TradingMode.GLOBAL_IA
+            
+            msg = "🧠 *TRADER IA - Menu*\n\n"
+            
+            if is_global:
+                msg += "✅ *Modo GLOBAL\\_IA ATIVO*\n"
+                msg += "A IA está 100% no controle das operações.\n\n"
+            else:
+                msg += f"📊 Modo atual: *{current_mode.value}*\n\n"
+            
+            msg += "*Comandos disponíveis:*\n\n"
+            msg += "💬 `/ia <pergunta>` - Conversar com o trader\n"
+            msg += "_Exemplo: /ia O que você está vendo no mercado?_\n\n"
+            msg += "📊 `/state` - Ver dados que a IA enxerga\n\n"
+            
+            if is_global:
+                msg += "🔴 `/modo_global off` - Desativar modo autônomo\n"
+            else:
+                msg += "🟢 `/modo_global on` - Ativar modo 100% autônomo\n"
+            
+            msg += "\n*Perguntas que você pode fazer:*\n"
+            msg += "• _Por que você abriu BTC long?_\n"
+            msg += "• _Qual sua visão do mercado agora?_\n"
+            msg += "• _Devo fechar minha posição em SOL?_\n"
+            msg += "• _O que você faria com $500?_\n"
+            msg += "• _Quais oportunidades você vê?_\n"
+            
+            # Botões inline para ações rápidas
+            markup = types.InlineKeyboardMarkup(row_width=2)
+            
+            if is_global:
+                markup.add(
+                    types.InlineKeyboardButton("🔴 Desativar GLOBAL_IA", callback_data="global_ia_off"),
+                    types.InlineKeyboardButton("📊 Ver State", callback_data="global_ia_state")
+                )
+            else:
+                markup.add(
+                    types.InlineKeyboardButton("🟢 Ativar GLOBAL_IA", callback_data="global_ia_on"),
+                    types.InlineKeyboardButton("📊 Ver State", callback_data="global_ia_state")
+                )
+            
+            markup.add(
+                types.InlineKeyboardButton("💬 Perguntar: Visão do mercado?", callback_data="ia_ask_market")
+            )
+            
+            self.bot.send_message(chat_id, msg, parse_mode='Markdown', reply_markup=markup)
+            
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro ao enviar menu IA: {e}")
             self.bot.send_message(chat_id, f"❌ Erro: {str(e)}", parse_mode=None)
     
     def _show_global_mode_status(self, chat_id: int):
