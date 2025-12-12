@@ -109,7 +109,14 @@ class QualityGate:
             logger.debug("[QUALITY GATE] Phase 3 não disponível")
         
         mode_str = mode_manager.current_mode.value if mode_manager else "N/A"
-        logger.info(f"[QUALITY GATE] Inicializado: mode={mode_str} | min_conf={self.min_confidence} | "
+        
+        # Obtém min_conf real do modo atual (não o fallback)
+        if mode_manager:
+            actual_min_conf = mode_manager.get_min_conf_swing()
+        else:
+            actual_min_conf = self.min_confidence
+            
+        logger.info(f"[QUALITY GATE] Inicializado: mode={mode_str} | min_conf={actual_min_conf:.2f} | "
                    f"max_body={self.max_candle_body_pct}% | min_confluences={self.min_confluences}")
     
     def _get_mode_params(self) -> ModeQualityParams:
