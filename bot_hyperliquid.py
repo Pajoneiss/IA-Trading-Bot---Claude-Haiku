@@ -1758,77 +1758,9 @@ class HyperliquidBot:
             self.risk_manager.update_equity(equity)
             self.position_manager.sync_with_exchange(positions_raw)
             
-            # ========== 2. MONTA MARKET SNAPSHOT (DADOS PUROS) ==========
-            # A IA recebe APENAS dados - ela decide o que fazer com eles
-            market_snapshot = []
-            
-            for pair in self.trading_pairs[:12]:  # Top 12 pares
-                try:
-                    price = all_prices.get(pair)
-                    if not price:
-                        continue
-                    
-                    price = float(price)
-                    
-                    # Busca candles para calcular métricas básicas
-                    candles_1h = self._fetch_candles_cached(pair, interval="1h", limit=50)
-                    candles_4h = self._fetch_candles_cached(pair, interval="4h", limit=30)
-                    
-                    # Calcula métricas simples (informativas, não decisivas)
-                    change_1h = 0
-                    change_24h = 0
-                    volatility = "normal"
-                    trend_simple = "neutral"
-                    
-                    if candles_1h and len(candles_1h) > 1:
-                        # Change 1h
-                        c1 = float(candles_1h[-1].get('c', candles_1h[-1].get('close', price)))
-                        c2 = float(candles_1h[-2].get('c', candles_1h[-2].get('close', price)))
-                        if c2 > 0:
-                            change_1h = ((c1 - c2) / c2) * 100
-                        
-                        # Change 24h (aproximado)
-                        if len(candles_1h) >= 24:
-                            c24 = float(candles_1h[-24].get('c', candles_1h[-24].get('close', price)))
-                            if c24 > 0:
-                                change_24h = ((price - c24) / c24) * 100
-                        
-                        # Volatilidade simples (range das últimas 10 velas)
-                        recent = candles_1h[-10:]
-                        highs = [float(c.get('h', c.get('high', 0))) for c in recent]
-                        lows = [float(c.get('l', c.get('low', 0))) for c in recent]
-                        if highs and lows and min(lows) > 0:
-                            vol_pct = ((max(highs) - min(lows)) / min(lows)) * 100
-                            if vol_pct > 5:
-                                volatility = "high"
-                            elif vol_pct > 2:
-                                volatility = "medium"
-                            else:
-                                volatility = "low"
-                    
-                    # Trend simples baseado em preço vs média
-                    if candles_4h and len(candles_4h) >= 10:
-                        closes = [float(c.get('c', c.get('close', 0))) for c in candles_4h[-10:]]
-                        if closes:
-                            avg = sum(closes) / len(closes)
-                            if price > avg * 1.02:
-                                trend_simple = "bullish"
-                            elif price < avg * 0.98:
-                                trend_simple = "bearish"
-                    
-                    snapshot = {
-                        'symbol': pair,
-                        'price': price,
-                        'change_1h_pct': round(change_1h, 2),
-                        'change_24h_pct': round(change_24h, 2),
-                        'volatility': volatility,
-                        'trend': trend_simple
-                    }
-                    
-                    market_snapshot.append(snapshot)
-                    
-                except Exception as e:
-                    self.logger.debug(f"[GLOBAL_IA] Erro ao processar {pair}: {e}")
+            # ========== 2. MONTA MARKET SNAPSHOT RICO ==========
+            # Market snapshot COMPLETO para IA operar de verdade
+            market_snapshot = self._build_rich_market_snapshot(all_prices)
             
             # Salva para uso no Telegram /ia
             self.last_market_contexts = market_snapshot
@@ -2004,6 +1936,240 @@ class HyperliquidBot:
                 
         except Exception as e:
             self.logger.error(f"[GLOBAL_IA] Erro ao executar {intent} em {symbol}: {e}")
+
+    def _build_rich_market_snapshot(self, all_prices: Dict[str, float]) -> List[Dict]:
+        """
+        Constrói um MARKET SNAPSHOT RICO para a IA operar de verdade.
+        
+        Inclui para cada símbolo:
+        - Preço atual e histórico
+        - Mudanças percentuais (1h, 4h, 24h)
+        - Volatilidade (ATR proxy)
+        - Tendência multi-timeframe
+        - Momentum
+        - EMAs e posição relativa
+        - Volume proxy
+        - Funding rate (se disponível)
+        """
+        market_snapshot = []
+        
+        # Busca funding rates uma vez
+        try:
+            funding_rates = self.client.get_funding_rates()
+            funding_map = {f['coin']: float(f.get('funding_rate', 0)) for f in funding_rates}
+        except:
+            funding_map = {}
+        
+        for pair in self.trading_pairs[:15]:  # Top 15 pares
+            try:
+                price = all_prices.get(pair)
+                if not price:
+                    continue
+                price = float(price)
+                
+                # Busca candles de múltiplos timeframes
+                candles_15m = self._fetch_candles_cached(pair, interval="15m", limit=50)
+                candles_1h = self._fetch_candles_cached(pair, interval="1h", limit=50)
+                candles_4h = self._fetch_candles_cached(pair, interval="4h", limit=50)
+                candles_1d = self._fetch_candles_cached(pair, interval="1d", limit=20)
+                
+                # Helper para extrair closes
+                def get_closes(candles):
+                    if not candles:
+                        return []
+                    return [float(c.get('c', c.get('close', 0))) for c in candles]
+                
+                def get_highs(candles):
+                    if not candles:
+                        return []
+                    return [float(c.get('h', c.get('high', 0))) for c in candles]
+                
+                def get_lows(candles):
+                    if not candles:
+                        return []
+                    return [float(c.get('l', c.get('low', 0))) for c in candles]
+                
+                def get_volumes(candles):
+                    if not candles:
+                        return []
+                    return [float(c.get('v', c.get('volume', 0))) for c in candles]
+                
+                closes_1h = get_closes(candles_1h)
+                closes_4h = get_closes(candles_4h)
+                closes_1d = get_closes(candles_1d)
+                highs_1h = get_highs(candles_1h)
+                lows_1h = get_lows(candles_1h)
+                volumes_1h = get_volumes(candles_1h)
+                
+                # ===== MUDANÇAS PERCENTUAIS =====
+                change_1h = 0
+                change_4h = 0
+                change_24h = 0
+                
+                if len(closes_1h) >= 2:
+                    change_1h = ((closes_1h[-1] - closes_1h[-2]) / closes_1h[-2]) * 100 if closes_1h[-2] > 0 else 0
+                if len(closes_1h) >= 4:
+                    change_4h = ((price - closes_1h[-4]) / closes_1h[-4]) * 100 if closes_1h[-4] > 0 else 0
+                if len(closes_1h) >= 24:
+                    change_24h = ((price - closes_1h[-24]) / closes_1h[-24]) * 100 if closes_1h[-24] > 0 else 0
+                
+                # ===== ATR PROXY (Average True Range) =====
+                atr_pct = 0
+                if len(highs_1h) >= 14 and len(lows_1h) >= 14:
+                    tr_list = []
+                    for i in range(-14, 0):
+                        h = highs_1h[i]
+                        l = lows_1h[i]
+                        prev_c = closes_1h[i-1] if i > -14 else closes_1h[i]
+                        tr = max(h - l, abs(h - prev_c), abs(l - prev_c))
+                        tr_list.append(tr)
+                    atr = sum(tr_list) / len(tr_list)
+                    atr_pct = (atr / price) * 100 if price > 0 else 0
+                
+                # ===== VOLATILIDADE CATEGÓRICA =====
+                if atr_pct > 3:
+                    volatility = "very_high"
+                elif atr_pct > 2:
+                    volatility = "high"
+                elif atr_pct > 1:
+                    volatility = "medium"
+                else:
+                    volatility = "low"
+                
+                # ===== EMAs =====
+                def calc_ema(closes, period):
+                    if len(closes) < period:
+                        return None
+                    multiplier = 2 / (period + 1)
+                    ema = sum(closes[:period]) / period  # SMA inicial
+                    for close in closes[period:]:
+                        ema = (close - ema) * multiplier + ema
+                    return ema
+                
+                ema_9 = calc_ema(closes_1h, 9)
+                ema_21 = calc_ema(closes_1h, 21)
+                ema_50 = calc_ema(closes_1h, 50) if len(closes_1h) >= 50 else None
+                
+                ema_9_4h = calc_ema(closes_4h, 9)
+                ema_21_4h = calc_ema(closes_4h, 21)
+                
+                # ===== TENDÊNCIA MULTI-TIMEFRAME =====
+                def get_trend(ema_fast, ema_slow, price):
+                    if ema_fast is None or ema_slow is None:
+                        return "neutral"
+                    if price > ema_fast > ema_slow:
+                        return "bullish"
+                    elif price < ema_fast < ema_slow:
+                        return "bearish"
+                    elif price > ema_fast and ema_fast < ema_slow:
+                        return "recovering"
+                    elif price < ema_fast and ema_fast > ema_slow:
+                        return "weakening"
+                    return "neutral"
+                
+                trend_1h = get_trend(ema_9, ema_21, price)
+                trend_4h = get_trend(ema_9_4h, ema_21_4h, price)
+                
+                # Trend diário simples
+                trend_1d = "neutral"
+                if len(closes_1d) >= 10:
+                    avg_10d = sum(closes_1d[-10:]) / 10
+                    if price > avg_10d * 1.03:
+                        trend_1d = "bullish"
+                    elif price < avg_10d * 0.97:
+                        trend_1d = "bearish"
+                
+                # ===== MOMENTUM =====
+                momentum = "flat"
+                if change_1h > 1 and change_4h > 2:
+                    momentum = "strong_bullish"
+                elif change_1h > 0.5 and change_4h > 0:
+                    momentum = "bullish"
+                elif change_1h < -1 and change_4h < -2:
+                    momentum = "strong_bearish"
+                elif change_1h < -0.5 and change_4h < 0:
+                    momentum = "bearish"
+                
+                # ===== RSI PROXY =====
+                rsi = 50  # Default neutro
+                if len(closes_1h) >= 15:
+                    gains = []
+                    losses = []
+                    for i in range(-14, 0):
+                        diff = closes_1h[i] - closes_1h[i-1]
+                        if diff > 0:
+                            gains.append(diff)
+                            losses.append(0)
+                        else:
+                            gains.append(0)
+                            losses.append(abs(diff))
+                    avg_gain = sum(gains) / 14
+                    avg_loss = sum(losses) / 14
+                    if avg_loss > 0:
+                        rs = avg_gain / avg_loss
+                        rsi = 100 - (100 / (1 + rs))
+                    else:
+                        rsi = 100
+                
+                # ===== VOLUME =====
+                volume_trend = "normal"
+                if len(volumes_1h) >= 20:
+                    avg_vol = sum(volumes_1h[-20:]) / 20
+                    recent_vol = sum(volumes_1h[-3:]) / 3 if len(volumes_1h) >= 3 else 0
+                    if avg_vol > 0:
+                        vol_ratio = recent_vol / avg_vol
+                        if vol_ratio > 1.5:
+                            volume_trend = "high"
+                        elif vol_ratio < 0.5:
+                            volume_trend = "low"
+                
+                # ===== POSIÇÃO RELATIVA (onde está no range) =====
+                range_position = "middle"
+                if len(highs_1h) >= 20 and len(lows_1h) >= 20:
+                    high_20 = max(highs_1h[-20:])
+                    low_20 = min(lows_1h[-20:])
+                    if high_20 > low_20:
+                        pos_pct = (price - low_20) / (high_20 - low_20)
+                        if pos_pct > 0.8:
+                            range_position = "near_high"
+                        elif pos_pct < 0.2:
+                            range_position = "near_low"
+                
+                # ===== FUNDING RATE =====
+                funding = funding_map.get(pair, 0)
+                funding_signal = "neutral"
+                if funding > 0.0005:
+                    funding_signal = "longs_pay"  # Muitos longs, possível reversão
+                elif funding < -0.0005:
+                    funding_signal = "shorts_pay"  # Muitos shorts, possível reversão
+                
+                # ===== MONTA SNAPSHOT =====
+                snapshot = {
+                    'symbol': pair,
+                    'price': round(price, 6),
+                    'change_1h_pct': round(change_1h, 2),
+                    'change_4h_pct': round(change_4h, 2),
+                    'change_24h_pct': round(change_24h, 2),
+                    'volatility': volatility,
+                    'atr_pct': round(atr_pct, 2),
+                    'trend_1h': trend_1h,
+                    'trend_4h': trend_4h,
+                    'trend_1d': trend_1d,
+                    'momentum': momentum,
+                    'rsi_14': round(rsi, 1),
+                    'volume': volume_trend,
+                    'range_position': range_position,
+                    'funding': funding_signal,
+                    'ema_position': 'above' if ema_21 and price > ema_21 else 'below' if ema_21 else 'unknown'
+                }
+                
+                market_snapshot.append(snapshot)
+                
+            except Exception as e:
+                self.logger.debug(f"[GLOBAL_IA] Erro ao processar {pair}: {e}")
+        
+        self.logger.info(f"[GLOBAL_IA] 📊 Market snapshot construído: {len(market_snapshot)} símbolos")
+        return market_snapshot
 
     def _execute_increase(self, decision: Dict[str, Any], prices: Dict[str, float]):
         """Aumenta posição existente (DCA/Piramidagem)"""
