@@ -317,38 +317,75 @@ class TurboMode:
         symbol: str,
         candles: list,
         side: str,
-        confidence: float
-    ) -> Tuple[bool, str]:
+        confidence: float,
+        execution_mode: str = "LIVE",
+        core_setup: bool = False
+    ) -> Tuple[bool, str, float]:
         """
         Avaliação rápida: deve tomar o trade?
+        
+        [PAPER MODE] Em PAPER_ONLY, é mais permissivo:
+        - Tendência neutra → SOFT_REDUCE (risk_mult=0.5) ao invés de BLOCK
+        - Core setup válido tem prioridade
         
         Substitui QualityGate, TrendGuard, ChopFilter, etc.
         TUDO EM UMA FUNÇÃO.
         
         Returns:
-            (should_trade, reason)
+            (should_trade, reason, risk_multiplier)
         """
         # 1. Detecta tendência
         trend, strength = self.detect_trend(candles, symbol)
         
-        # 2. Tendência neutra = não opera
+        is_paper = execution_mode in ["PAPER_ONLY", "PAPER", "SHADOW"]
+        
+        # 2. Tendência neutra
         if trend == TurboTrend.NEUTRAL:
-            return False, "Tendência neutra"
+            # [PAPER MODE] Se PAPER + core_setup válido → permite com risco reduzido
+            if is_paper and core_setup:
+                self.logger.info(
+                    f"[TURBO] ⚠️ {symbol} tendência neutra → risk_mult=0.5 (PAPER + CORE_SETUP)"
+                )
+                return True, "PAPER: tendência neutra mas CORE setup válido", 0.5
+            
+            # [PAPER MODE] Mesmo sem core_setup, se confidence alta → permite
+            if is_paper and confidence >= 0.75:
+                self.logger.info(
+                    f"[TURBO] ⚠️ {symbol} tendência neutra → risk_mult=0.5 (PAPER + high conf)"
+                )
+                return True, "PAPER: tendência neutra mas confidence alta", 0.5
+            
+            # LIVE ou PAPER sem setup → bloqueia
+            return False, "Tendência neutra", 0.0
         
         # 3. Verifica alinhamento
         expected = 'long' if trend == TurboTrend.BULL else 'short'
         if side != expected:
-            return False, f"Contra tendência: quer {side}, tendência é {trend.value}"
+            # [PAPER MODE] Permite contra-tendência com risco muito reduzido
+            if is_paper and core_setup and confidence >= 0.80:
+                self.logger.info(
+                    f"[TURBO] ⚠️ {symbol} contra tendência → risk_mult=0.25 (PAPER experimental)"
+                )
+                return True, f"PAPER: contra tendência (experimental)", 0.25
+            
+            return False, f"Contra tendência: quer {side}, tendência é {trend.value}", 0.0
         
         # 4. Confidence mínima (ajustada por força)
         min_conf = self.min_confidence - (strength * 0.1)  # Mais forte = menos exigente
         min_conf = max(min_conf, 0.50)  # Piso de 50%
         
+        # [PAPER MODE] Threshold mais baixo
+        if is_paper:
+            min_conf = min(min_conf, 0.60)
+        
         if confidence < min_conf:
-            return False, f"Confidence {confidence:.2f} < {min_conf:.2f}"
+            return False, f"Confidence {confidence:.2f} < {min_conf:.2f}", 0.0
         
         # PASSOU!
-        return True, f"Aprovado: {trend.value} strength={strength:.2f}"
+        # Tendência forte = risco normal, moderada = reduzido
+        risk_mult = 1.0 if strength >= 0.5 else 0.75
+        
+        return True, f"Aprovado: {trend.value} strength={strength:.2f}", risk_mult
 
 
 # Instância global
