@@ -1030,6 +1030,72 @@ class HyperliquidBot:
                     self.last_ema_contexts[pair] = ema_ctx
                 # ================================================
                 
+                # ========== [CHECK-UP 360] CORE STRATEGY MTF ==========
+                # Análise completa com 1D/4H/1H/15M usando core_strategy
+                try:
+                    from bot.core_strategy import get_core_strategy, TrendBias
+                    
+                    if not hasattr(self, '_core_strategy'):
+                        self._core_strategy = get_core_strategy(logger_instance=self.logger)
+                    
+                    # Busca candles de múltiplos timeframes
+                    candles_15m = self._fetch_candles_cached(pair, interval="15m", limit=100)
+                    candles_4h = self._fetch_candles_cached(pair, interval="4h", limit=100)
+                    candles_1d = self._fetch_candles_cached(pair, interval="1d", limit=50)
+                    
+                    # Normaliza candles
+                    candles_15m_norm = self.technical_analysis.normalize_candles(candles_15m, logger_instance=self.logger) if candles_15m else []
+                    candles_4h_norm = self.technical_analysis.normalize_candles(candles_4h, logger_instance=self.logger) if candles_4h else []
+                    candles_1d_norm = self.technical_analysis.normalize_candles(candles_1d, logger_instance=self.logger) if candles_1d else []
+                    candles_1h_norm = normalized_candles if normalized_candles else []
+                    
+                    # Análise core strategy (4H é o chefe!)
+                    if candles_4h_norm and candles_1h_norm:
+                        core_analysis = self._core_strategy.analyze_symbol(
+                            symbol=pair,
+                            candles_1d=candles_1d_norm,
+                            candles_4h=candles_4h_norm,
+                            candles_1h=candles_1h_norm,
+                            candles_15m=candles_15m_norm
+                        )
+                        
+                        # Guarda análise completa
+                        context['core_analysis'] = {
+                            'trend_bias': core_analysis.trend_bias.value,
+                            'has_valid_setup': core_analysis.has_valid_setup,
+                            'setup_type': core_analysis.setup_type,
+                            'setup_reason': core_analysis.setup_reason,
+                            'daily_climate': core_analysis.daily_climate,
+                            'h1_confirmation': core_analysis.h1_confirmation,
+                            'size_multiplier': core_analysis.size_multiplier,
+                            'confidence_adjustment': core_analysis.confidence_adjustment
+                        }
+                        
+                        # 4H define trend_bias (REGRA PRINCIPAL!)
+                        if core_analysis.h4:
+                            h4_bias = core_analysis.h4.trend_bias.value
+                            context['trend_bias_4h'] = h4_bias
+                            
+                            # Log detalhado
+                            self.logger.info(
+                                f"[CORE STRATEGY] {pair}: 4H={h4_bias} | "
+                                f"1D_climate={core_analysis.daily_climate} | "
+                                f"1H_confirm={core_analysis.h1_confirmation} | "
+                                f"setup={core_analysis.has_valid_setup}"
+                            )
+                            
+                            # Se core_analysis tem setup válido, marca para possível trigger
+                            if core_analysis.has_valid_setup:
+                                context['core_setup_valid'] = True
+                                context['core_setup_type'] = core_analysis.setup_type
+                                self.logger.info(
+                                    f"[CORE STRATEGY] ✅ {pair} SETUP VÁLIDO: {core_analysis.setup_type} - {core_analysis.setup_reason}"
+                                )
+                        
+                except Exception as e:
+                    self.logger.debug(f"[CORE STRATEGY] Erro ao analisar {pair}: {e}")
+                # =========================================================
+                
                 # ========== [Claude Trend Refactor] REGIME INFO ==========
                 # Calcula regime e trend_bias para usar em filtros e IA
                 try:
@@ -1038,43 +1104,45 @@ class HyperliquidBot:
                     if not hasattr(self, '_regime_analyzer'):
                         self._regime_analyzer = MarketRegimeAnalyzer(logger_instance=self.logger)
                     
-                    # Busca candles 15m para análise de regime
-                    candles_15m = self._fetch_candles_cached(pair, interval="15m", limit=100)
-                    
-                    # Usa candles 1h já carregados
+                    # Usa candles já buscados acima
                     candles_h1 = normalized_candles if normalized_candles else []
                     
-                    if candles_15m and candles_h1:
-                        # Normaliza 15m também
-                        candles_15m_norm = self.technical_analysis.normalize_candles(candles_15m, logger_instance=self.logger)
-                        
+                    if candles_15m_norm and candles_h1:
                         # [Core Strategy] Passa ema_context para detectar fresh cross
                         ema_context_for_regime = context.get('ema_timing')
                         
+                        # [CHECK-UP 360] Passa candles 4H para regime usar como chefe
                         regime_info = self._regime_analyzer.evaluate(
                             symbol=pair,
                             candles_m15=candles_15m_norm or [],
                             candles_h1=candles_h1,
-                            market_intel=None,  # TODO: integrar market intelligence
-                            ema_context=ema_context_for_regime
+                            market_intel=None,
+                            ema_context=ema_context_for_regime,
+                            candles_h4=candles_4h_norm if 'candles_4h_norm' in dir() else None
                         )
                         
                         context['regime_info'] = regime_info
-                        context['trend_bias'] = regime_info.get('trend_bias', 'neutral')
+                        
+                        # IMPORTANTE: trend_bias vem do 4H (core_strategy) se disponível
+                        # Senão usa o regime_info como fallback
+                        if context.get('trend_bias_4h'):
+                            context['trend_bias'] = context['trend_bias_4h']
+                        else:
+                            context['trend_bias'] = regime_info.get('trend_bias', 'neutral')
                         
                         self.logger.info(
                             f"[REGIME] {pair}: regime={regime_info.get('regime')}, "
-                            f"trend_bias={regime_info.get('trend_bias')}, "
+                            f"trend_bias={context['trend_bias']}, "
                             f"volatility={regime_info.get('volatility')}"
                         )
                     else:
                         context['regime_info'] = {'regime': 'RANGE_CHOP', 'trend_bias': 'neutral'}
-                        context['trend_bias'] = 'neutral'
+                        context['trend_bias'] = context.get('trend_bias_4h', 'neutral')
                         
                 except Exception as e:
                     self.logger.error(f"[REGIME] Erro ao calcular regime para {pair}: {e}")
                     context['regime_info'] = {'regime': 'RANGE_CHOP', 'trend_bias': 'neutral'}
-                    context['trend_bias'] = 'neutral'
+                    context['trend_bias'] = context.get('trend_bias_4h', 'neutral')
                 # =========================================================
                 
                 market_contexts.append(context)
