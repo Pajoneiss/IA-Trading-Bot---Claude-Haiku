@@ -44,6 +44,9 @@ from bot.market_scanner import MarketScanner, ScanTrigger
 from bot.turbo_mode import TurboMode, get_turbo_mode
 from bot.learning_engine import LearningEngine, get_learning_engine
 
+# CHECK-UP 360 - Trade Logger estruturado
+from bot.trade_logger import get_trade_logger
+
 
 # ==================== CONFIGURAÇÃO DE LOGGING ====================
 def setup_logging(level: str = "INFO"):
@@ -1885,6 +1888,30 @@ class HyperliquidBot:
                 take_profit_pct=take_profit_pct,
                 strategy=strategy
             )
+            
+            # [CHECK-UP 360] Log estruturado do trade (PAPER)
+            try:
+                trade_logger = get_trade_logger(self.logger)
+                regime_info = decision.get('regime_info', {})
+                trade_logger.log_trade(
+                    symbol=symbol,
+                    action='open',
+                    side=side,
+                    entry_price=current_price,
+                    size=size,
+                    confidence=confidence,
+                    regime=regime_info.get('regime', 'UNKNOWN'),
+                    trend_bias=regime_info.get('trend_bias', 'neutral'),
+                    ai_type=source or 'swing',
+                    reason=reason or '',
+                    stop_loss=stop_loss_price or 0,
+                    take_profit=take_profit_price or 0,
+                    leverage=leverage,
+                    execution_mode='PAPER'
+                )
+            except Exception as log_err:
+                self.logger.warning(f"[TRADE LOGGER] Erro ao logar trade: {log_err}")
+            
             return True
             
         # Modo LIVE
@@ -1957,6 +1984,30 @@ class HyperliquidBot:
                     strategy=strategy,
                     extra_metadata=ema_metadata # Passa metadata extra
                 )
+                
+                # [CHECK-UP 360] Log estruturado do trade
+                try:
+                    trade_logger = get_trade_logger(self.logger)
+                    regime_info = decision.get('regime_info', {})
+                    trade_logger.log_trade(
+                        symbol=symbol,
+                        action='open',
+                        side=side,
+                        entry_price=current_price,
+                        size=size,
+                        confidence=confidence,
+                        regime=regime_info.get('regime', 'UNKNOWN'),
+                        trend_bias=regime_info.get('trend_bias', 'neutral'),
+                        ai_type=source or 'swing',
+                        reason=reason or '',
+                        stop_loss=stop_loss_price or 0,
+                        take_profit=take_profit_price or 0,
+                        leverage=leverage,
+                        execution_mode='LIVE' if self.live_trading else 'PAPER',
+                        extra=ema_metadata
+                    )
+                except Exception as log_err:
+                    self.logger.warning(f"[TRADE LOGGER] Erro ao logar trade: {log_err}")
                 
                 # 📱 Notifica via Telegram com informações completas
                 self.telegram.notify_position_opened(
@@ -2326,10 +2377,10 @@ def main():
         'openai_api_key': os.getenv('OPENAI_API_KEY'),
         'openai_model_scalp': os.getenv('OPENAI_MODEL', 'gpt-4o-mini'),
         'live_trading': os.getenv('LIVE_TRADING', 'false').lower() == 'true',
-        'risk_per_trade_pct': float(os.getenv('RISK_PER_TRADE_PCT', '5.0')),  # ← CORRIGIDO: 5% em vez de 10%
+        'risk_per_trade_pct': float(os.getenv('RISK_PER_TRADE_PCT', '2.5')),  # ← CORRIGIDO: 5% em vez de 10%
         'max_daily_drawdown_pct': float(os.getenv('MAX_DAILY_DRAWDOWN_PCT', '10.0')),
         'max_open_trades': int(os.getenv('MAX_OPEN_TRADES', '10')),
-        'max_leverage': int(os.getenv('MAX_LEVERAGE', '50')),
+        'max_leverage': int(os.getenv('MAX_LEVERAGE', '20')),
         'min_notional': float(os.getenv('MIN_NOTIONAL', '0.5')),
         'default_stop_pct': float(os.getenv('DEFAULT_STOP_PCT', '2.0')),
         'default_tp_pct': float(os.getenv('DEFAULT_TP_PCT', '4.0')),
