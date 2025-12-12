@@ -76,6 +76,10 @@ class MarketScanner:
         self.swing_timeframes = self.config.get("swing", {}).get("timeframes", ["1d", "4h", "1h"])
         self.scalp_timeframes = self.config.get("scalp", {}).get("timeframes", ["4h", "1h", "30m"])
         
+        # [PATCH] Flag para habilitar DAILY_EMA_SHIFT como trigger (default: DESATIVADO)
+        # O 1D deve ser FILTRO macro, não gatilho direto para IA
+        self.enable_daily_ema_shift = self.config.get("swing", {}).get("enable_daily_ema_shift", False)
+        
         # Parâmetros do scanner
         scanner_cfg = self.config.get("scanner", {})
         self.strong_move_atr_mult = scanner_cfg.get("strong_move_atr_multiplier", 1.5)
@@ -144,10 +148,12 @@ class MarketScanner:
                 continue
             
             try:
-                # 1. DAILY EMA SHIFT (prioridade alta)
-                trigger = self._check_daily_ema_shift(symbol, ema_contexts.get(symbol))
-                if trigger:
-                    triggers.append(trigger)
+                # 1. DAILY EMA SHIFT (desativado por default - 1D é filtro, não gatilho)
+                # Só dispara se enable_daily_ema_shift=true na config
+                if self.enable_daily_ema_shift:
+                    trigger = self._check_daily_ema_shift(symbol, ema_contexts.get(symbol))
+                    if trigger:
+                        triggers.append(trigger)
                 
                 # 2. REGIME CHANGE (prioridade alta)
                 trigger = self._check_regime_change(symbol, regime_info.get(symbol))
@@ -183,6 +189,12 @@ class MarketScanner:
     def _check_daily_ema_shift(self, symbol: str, ema_ctx) -> Optional[ScanTrigger]:
         """
         Verifica se houve mudança de tendência no diário (EMA 9/26 cross)
+        
+        NOTA: Esta função NÃO é mais usada por default (enable_daily_ema_shift=false).
+        O 1D deve ser usado como FILTRO macro (clima), não como gatilho direto para IA.
+        Triggers prioritários são: REGIME_CHANGE, STRONG_MOVE, KEY_LEVEL_TOUCH.
+        
+        Para reativar, setar "enable_daily_ema_shift": true em data/ai_budget_config.json
         """
         if not ema_ctx:
             return None
