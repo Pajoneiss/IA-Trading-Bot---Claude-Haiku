@@ -111,6 +111,53 @@ class Position:
         else:  # short
             return ((self.entry_price - current_price) / self.entry_price) * 100
     
+    def move_stop_to_breakeven(self):
+        """
+        Move o stop_loss_price para o preço de entrada (breakeven).
+        Apenas altera os atributos internos da posição.
+        """
+        self.stop_loss_price = self.entry_price
+        self.stop_loss_pct = 0.0
+        logger.info(f"[POSITION] {self.symbol} SL movido para breakeven: ${self.stop_loss_price}")
+    
+    def update_stop_loss(self, new_sl_price: float):
+        """
+        Atualiza o preço de stop loss para `new_sl_price`.
+        Também recalcula `stop_loss_pct` com base em `entry_price`.
+        """
+        if not new_sl_price or new_sl_price <= 0:
+            return
+        
+        old_sl = self.stop_loss_price
+        self.stop_loss_price = new_sl_price
+        
+        # Recalcula pct para manter consistência
+        diff = abs(self.entry_price - new_sl_price)
+        self.stop_loss_pct = (diff / self.entry_price) * 100
+        
+        logger.info(f"[POSITION] {self.symbol} SL atualizado: ${old_sl:.2f} → ${new_sl_price:.2f} ({self.stop_loss_pct:.2f}%)")
+    
+    def update_take_profit(self, new_tp_price: float):
+        """
+        Atualiza o preço de take profit para `new_tp_price`.
+        Também recalcula `take_profit_pct` para manter consistência.
+        """
+        if not new_tp_price or new_tp_price <= 0:
+            return
+        
+        old_tp = self.take_profit_price
+        self.take_profit_price = new_tp_price
+        
+        # Recalcula pct baseado na direção
+        if self.side == 'long':
+            diff = new_tp_price - self.entry_price
+        else:
+            diff = self.entry_price - new_tp_price
+        
+        self.take_profit_pct = (diff / self.entry_price) * 100
+        
+        logger.info(f"[POSITION] {self.symbol} TP atualizado: ${old_tp} → ${new_tp_price:.2f} ({self.take_profit_pct:.2f}%)")
+    
     def to_dict(self) -> Dict[str, Any]:
         """Converte para dict"""
         return {
@@ -245,6 +292,66 @@ class PositionManager:
         if symbol in self.positions:
             del self.positions[symbol]
             logger.info(f"Posição removida: {symbol}")
+    
+    def update_stop_loss(self, symbol: str, new_sl_pct: float):
+        """
+        Atualiza o stop_loss_pct da posição e recalcula stop_loss_price.
+        
+        Args:
+            symbol: Símbolo da posição
+            new_sl_pct: Novo percentual de stop loss
+        """
+        position = self.positions.get(symbol)
+        if not position:
+            logger.warning(f"[PM] update_stop_loss: Posição {symbol} não encontrada")
+            return
+        
+        old_sl_pct = position.stop_loss_pct
+        old_sl_price = position.stop_loss_price
+        
+        position.stop_loss_pct = new_sl_pct
+        
+        # Recalcula stop_loss_price baseado em entry_price e direção
+        if position.side == 'long':
+            position.stop_loss_price = position.entry_price * (1 - new_sl_pct / 100)
+        else:
+            position.stop_loss_price = position.entry_price * (1 + new_sl_pct / 100)
+        
+        logger.info(
+            f"[PM] SL atualizado: {symbol} | "
+            f"{old_sl_pct:.2f}% (${old_sl_price:.2f}) → "
+            f"{new_sl_pct:.2f}% (${position.stop_loss_price:.2f})"
+        )
+    
+    def update_take_profit(self, symbol: str, new_tp_pct: float):
+        """
+        Atualiza o take_profit_pct da posição e recalcula take_profit_price.
+        
+        Args:
+            symbol: Símbolo da posição
+            new_tp_pct: Novo percentual de take profit
+        """
+        position = self.positions.get(symbol)
+        if not position:
+            logger.warning(f"[PM] update_take_profit: Posição {symbol} não encontrada")
+            return
+        
+        old_tp_pct = position.take_profit_pct
+        old_tp_price = position.take_profit_price
+        
+        position.take_profit_pct = new_tp_pct
+        
+        # Recalcula take_profit_price baseado em entry_price e direção
+        if position.side == 'long':
+            position.take_profit_price = position.entry_price * (1 + new_tp_pct / 100)
+        else:
+            position.take_profit_price = position.entry_price * (1 - new_tp_pct / 100)
+        
+        logger.info(
+            f"[PM] TP atualizado: {symbol} | "
+            f"{old_tp_pct}% (${old_tp_price}) → "
+            f"{new_tp_pct:.2f}% (${position.take_profit_price:.2f})"
+        )
     
     def manage_position(self, symbol: str, current_price: float, 
                        current_mode: str, market_context: Dict[str, Any]) -> List[Dict[str, Any]]:
