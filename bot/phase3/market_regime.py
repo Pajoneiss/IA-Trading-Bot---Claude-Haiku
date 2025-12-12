@@ -54,9 +54,12 @@ class MarketRegimeAnalyzer:
                 candles_m15: List[Dict[str, Any]],
                 candles_h1: List[Dict[str, Any]],
                 market_intel: Optional[Dict[str, Any]] = None,
-                ema_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                ema_context: Optional[Dict[str, Any]] = None,
+                candles_h4: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """
         Avalia regime de mercado atual
+        
+        [CHECK-UP 360] Agora usa 4H como timeframe principal para trend_bias!
         
         Args:
             symbol: Símbolo do ativo
@@ -64,6 +67,7 @@ class MarketRegimeAnalyzer:
             candles_h1: Candles 1h normalizados
             market_intel: Market Intelligence (Fear & Greed, etc)
             ema_context: Contexto EMA do EMACrossAnalyzer (para fresh cross detection)
+            candles_h4: Candles 4h normalizados (NOVO - principal para trend_bias)
             
         Returns:
             {
@@ -85,29 +89,36 @@ class MarketRegimeAnalyzer:
             # 1. Análise de volatilidade
             volatility_info = self._analyze_volatility(candles_h1)
             
-            # 2. Análise de tendência H1
+            # 2. [CHECK-UP 360] Análise de tendência 4H (CHEFE!)
+            trend_h4 = None
+            if candles_h4 and len(candles_h4) >= 20:
+                trend_h4 = self._analyze_trend(candles_h4, "4H")
+            
+            # 3. Análise de tendência H1 (confirmação)
             trend_h1 = self._analyze_trend(candles_h1, "H1")
             
-            # 3. Análise de tendência 15m
+            # 4. Análise de tendência 15m (gatilho)
             trend_m15 = self._analyze_trend(candles_m15, "15m")
             
-            # 4. Market Intelligence
+            # 5. Market Intelligence
             mi_info = self._analyze_market_intel(market_intel)
             
-            # 5. Classifica regime
+            # 6. Classifica regime (usa 4H se disponível)
             regime_info = self._classify_regime(
                 volatility_info=volatility_info,
                 trend_h1=trend_h1,
                 trend_m15=trend_m15,
                 mi_info=mi_info,
                 symbol=symbol,
-                ema_context=ema_context
+                ema_context=ema_context,
+                trend_h4=trend_h4  # NOVO: 4H como chefe
             )
             
             # Log do regime
+            h4_str = f"4H={trend_h4.get('direction', 'N/A')}" if trend_h4 else "4H=N/A"
             self.logger.info(
                 f"[MARKET REGIME] {symbol} regime={regime_info['regime']}, "
-                f"bias={regime_info['trend_bias']}, vol={regime_info['volatility']}, "
+                f"bias={regime_info['trend_bias']}, {h4_str}, vol={regime_info['volatility']}, "
                 f"risk_off={regime_info['risk_off']}"
             )
             
@@ -171,11 +182,12 @@ class MarketRegimeAnalyzer:
     
     def _analyze_trend(self, candles: List[Dict[str, Any]], timeframe: str) -> Dict[str, Any]:
         """
-        Analisa tendência via swing highs/lows + EMAs (fallback mais tolerante)
+        Analisa tendência via swing highs/lows + EMAs + ADX
         
-        [Claude Trend Refactor] Data: 2024-12-11
-        - Adicionado análise por EMA como alternativa menos exigente
-        - EMA200 + EMA50 cross para detectar tendência mesmo sem swings perfeitos
+        [CHECK-UP 360] ADX agora é usado para confirmar força da tendência!
+        - ADX < 20: Tendência fraca, range
+        - ADX 20-40: Tendência moderada
+        - ADX > 40: Tendência forte
         """
         try:
             if len(candles) < 10:
@@ -187,29 +199,91 @@ class MarketRegimeAnalyzer:
             # === MÉTODO 2: SWING ANALYSIS (mais rigoroso) ===
             swing_trend = self._analyze_trend_by_swings(candles)
             
+            # === [CHECK-UP 360] MÉTODO 3: ADX para força ===
+            adx_data = self._calculate_adx(candles)
+            adx_value = adx_data.get('adx', 0) if adx_data else 0
+            plus_di = adx_data.get('plus_di', 0) if adx_data else 0
+            minus_di = adx_data.get('minus_di', 0) if adx_data else 0
+            
+            # Ajusta strength baseado no ADX
+            def adjust_strength_by_adx(base_strength: float, adx: float) -> float:
+                if adx >= 40:
+                    return min(0.95, base_strength + 0.2)
+                elif adx >= 25:
+                    return min(0.9, base_strength + 0.1)
+                elif adx >= 20:
+                    return base_strength
+                else:
+                    return max(0.2, base_strength - 0.2)
+            
             # Combina: Se EMA detecta tendência clara, usa EMA
             # Se EMA neutro mas swing detecta, usa swing
-            # Prioriza EMA porque é mais estável
+            # ADX modula a strength em ambos os casos
             if ema_trend['direction'] != 'neutral':
+                adjusted_strength = adjust_strength_by_adx(ema_trend['strength'], adx_value)
                 return {
                     'direction': ema_trend['direction'],
-                    'strength': ema_trend['strength'],
+                    'strength': adjusted_strength,
                     'method': 'ema',
+                    'adx': adx_value,
+                    'plus_di': plus_di,
+                    'minus_di': minus_di,
                     'ema_data': ema_trend
                 }
             elif swing_trend['direction'] != 'neutral':
+                adjusted_strength = adjust_strength_by_adx(swing_trend['strength'], adx_value)
                 return {
                     'direction': swing_trend['direction'],
-                    'strength': swing_trend['strength'],
+                    'strength': adjusted_strength,
                     'method': 'swing',
+                    'adx': adx_value,
+                    'plus_di': plus_di,
+                    'minus_di': minus_di,
                     'swing_data': swing_trend
                 }
             
-            return {'direction': 'neutral', 'strength': 0.3, 'method': 'none'}
+            # Se ADX mostra tendência forte mas EMA/swing neutros, usa DI para direção
+            if adx_value >= 25:
+                if plus_di > minus_di + 5:
+                    return {
+                        'direction': 'bullish',
+                        'strength': 0.5 + (adx_value - 25) / 100,
+                        'method': 'adx_di',
+                        'adx': adx_value,
+                        'plus_di': plus_di,
+                        'minus_di': minus_di
+                    }
+                elif minus_di > plus_di + 5:
+                    return {
+                        'direction': 'bearish',
+                        'strength': 0.5 + (adx_value - 25) / 100,
+                        'method': 'adx_di',
+                        'adx': adx_value,
+                        'plus_di': plus_di,
+                        'minus_di': minus_di
+                    }
+            
+            return {'direction': 'neutral', 'strength': 0.3, 'method': 'none', 'adx': adx_value}
             
         except Exception as e:
             self.logger.debug(f"[MARKET REGIME] Erro ao analisar tendência: {e}")
             return {'direction': 'neutral', 'strength': 0}
+    
+    def _calculate_adx(self, candles: List[Dict[str, Any]], period: int = 14) -> Optional[Dict[str, float]]:
+        """Calcula ADX a partir dos candles"""
+        try:
+            if len(candles) < period * 2:
+                return None
+            
+            highs = [float(c.get('h') or c.get('high', 0)) for c in candles]
+            lows = [float(c.get('l') or c.get('low', 0)) for c in candles]
+            closes = [float(c.get('c') or c.get('close', 0)) for c in candles]
+            
+            from bot.indicators import TechnicalIndicators
+            return TechnicalIndicators.calculate_adx(highs, lows, closes, period)
+        except Exception as e:
+            self.logger.debug(f"[MARKET REGIME] Erro ao calcular ADX: {e}")
+            return None
     
     def _analyze_trend_by_ema(self, candles: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -415,14 +489,16 @@ class MarketRegimeAnalyzer:
                         trend_m15: Dict,
                         mi_info: Dict,
                         symbol: str,
-                        ema_context: Dict = None) -> Dict[str, Any]:
+                        ema_context: Dict = None,
+                        trend_h4: Dict = None) -> Dict[str, Any]:
         """
         Classifica regime baseado em todos os fatores.
         
-        [Core Strategy Refactor] Agora considera:
-        - Fresh EMA cross como sinal forte (mesmo sem strength alto)
-        - Threshold de strength reduzido de 0.6 para 0.4
-        - Cross recente no 30m/15m aumenta probabilidade de trend
+        [CHECK-UP 360] HIERARQUIA MTF:
+        - 4H é o CHEFE (define trend_bias principal)
+        - 1H confirma ou modula agressividade
+        - 15M é gatilho de entrada
+        - Fresh EMA cross também conta como sinal forte
         """
         
         vol_level = volatility_info.get('level', 'normal')
@@ -433,6 +509,10 @@ class MarketRegimeAnalyzer:
         fg_level = mi_info.get('fg_level', 'neutral')
         risk_off = mi_info.get('risk_off', False)
         
+        # [CHECK-UP 360] 4H é o CHEFE!
+        h4_direction = trend_h4.get('direction', 'neutral') if trend_h4 else 'neutral'
+        h4_strength = trend_h4.get('strength', 0) if trend_h4 else 0
+        
         notes = []
         
         # [NEW] Detecta fresh cross do EMA context
@@ -440,12 +520,12 @@ class MarketRegimeAnalyzer:
         has_fresh_bear_cross = False
         if ema_context:
             states = ema_context.get('states', {})
-            for tf in ['30m', '1h']:
+            for tf in ['30m', '1h', '4h']:
                 state = states.get(tf, {})
                 if isinstance(state, dict):
-                    cross = state.get('last_cross_direction')
-                    bars = state.get('bars_since_last_cross', 99)
-                    is_fresh = state.get('is_fresh_cross', False)
+                    cross = state.get('last_cross_direction') or state.get('last_cross')
+                    bars = state.get('bars_since_last_cross') or state.get('bars_since', 99)
+                    is_fresh = state.get('is_fresh_cross') or state.get('is_fresh', False)
                 elif hasattr(state, 'last_cross_direction'):
                     cross = state.last_cross_direction
                     bars = state.bars_since_last_cross or 99
@@ -469,27 +549,33 @@ class MarketRegimeAnalyzer:
             notes.append(f"Volatilidade alta ({volatility_info.get('atr_pct', 0):.2f}%) + {fg_level}")
         
         # LOW_VOL_DRIFT: baixa volatilidade sem direção
-        elif vol_level == 'low' and h1_direction == 'neutral' and not has_fresh_bull_cross and not has_fresh_bear_cross:
+        elif vol_level == 'low' and h4_direction == 'neutral' and h1_direction == 'neutral' and not has_fresh_bull_cross and not has_fresh_bear_cross:
             regime = 'LOW_VOL_DRIFT'
             trend_bias = 'neutral'
             notes.append(f"Volatilidade baixa + sem tendência clara")
         
-        # TREND_BULL: tendência de alta
-        # [CHANGED] Threshold reduzido de 0.6 para 0.4, OU fresh bull cross
-        elif (h1_direction == 'bullish' and m15_direction in ['bullish', 'neutral'] and h1_strength > 0.4) or \
-             (has_fresh_bull_cross and h1_direction != 'bearish'):
+        # [CHECK-UP 360] TREND_BULL: 4H bullish é prioridade!
+        elif (h4_direction == 'bullish' and h4_strength > 0.3) or \
+             (h4_direction == 'bullish' and has_fresh_bull_cross) or \
+             (h1_direction == 'bullish' and h1_strength > 0.4 and h4_direction != 'bearish') or \
+             (has_fresh_bull_cross and h4_direction != 'bearish' and h1_direction != 'bearish'):
             regime = 'TREND_BULL'
             trend_bias = 'long'
+            if h4_direction == 'bullish':
+                notes.append(f"4H bullish (strength={h4_strength:.2f}) - CHEFE!")
             if has_fresh_bull_cross:
                 notes.append(f"Fresh bull cross detectado!")
             notes.append(f"H1 {h1_direction} (strength={h1_strength:.2f})")
         
-        # TREND_BEAR: tendência de baixa
-        # [CHANGED] Threshold reduzido de 0.6 para 0.4, OU fresh bear cross
-        elif (h1_direction == 'bearish' and m15_direction in ['bearish', 'neutral'] and h1_strength > 0.4) or \
-             (has_fresh_bear_cross and h1_direction != 'bullish'):
+        # [CHECK-UP 360] TREND_BEAR: 4H bearish é prioridade!
+        elif (h4_direction == 'bearish' and h4_strength > 0.3) or \
+             (h4_direction == 'bearish' and has_fresh_bear_cross) or \
+             (h1_direction == 'bearish' and h1_strength > 0.4 and h4_direction != 'bullish') or \
+             (has_fresh_bear_cross and h4_direction != 'bullish' and h1_direction != 'bullish'):
             regime = 'TREND_BEAR'
             trend_bias = 'short'
+            if h4_direction == 'bearish':
+                notes.append(f"4H bearish (strength={h4_strength:.2f}) - CHEFE!")
             if has_fresh_bear_cross:
                 notes.append(f"Fresh bear cross detectado!")
             notes.append(f"H1 {h1_direction} (strength={h1_strength:.2f})")
@@ -498,7 +584,7 @@ class MarketRegimeAnalyzer:
         else:
             regime = 'RANGE_CHOP'
             trend_bias = 'neutral'
-            notes.append(f"H1 {h1_direction}, 15m {m15_direction}, strength={h1_strength:.2f}")
+            notes.append(f"4H {h4_direction}, H1 {h1_direction}, 15m {m15_direction}")
         
         # Adiciona info de volatilidade
         notes.append(f"vol={vol_level}")
@@ -514,6 +600,8 @@ class MarketRegimeAnalyzer:
             'risk_off': risk_off,
             'notes': ' | '.join(notes),
             'raw_data': {
+                'h4_direction': h4_direction,
+                'h4_strength': h4_strength,
                 'h1_direction': h1_direction,
                 'm15_direction': m15_direction,
                 'h1_strength': h1_strength,
