@@ -1588,10 +1588,20 @@ class HyperliquidBot:
                     side = parsed.get('side', parsed.get('direction', 'long'))
                     confidence = float(parsed.get('confidence', 0.7))
                     
-                    turbo_ok, turbo_reason = self.turbo.evaluate_quick(symbol, candles, side, confidence)
+                    # [PAPER MODE] Passa info de execution_mode e core_setup
+                    exec_mode = self.execution_manager.execution_mode.value if hasattr(self, 'execution_manager') else "LIVE"
+                    is_core_setup = parsed.get('core_setup', False) or parsed.get('trigger_type') == 'CORE_SETUP'
+                    
+                    turbo_ok, turbo_reason, risk_mult = self.turbo.evaluate_quick(
+                        symbol, candles, side, confidence,
+                        execution_mode=exec_mode,
+                        core_setup=is_core_setup
+                    )
                     
                     if turbo_ok:
-                        self.logger.info(f"[TURBO] ✅ {symbol} aprovado: {turbo_reason}")
+                        # Aplica risk_multiplier à decisão
+                        parsed['risk_multiplier'] = risk_mult
+                        self.logger.info(f"[TURBO] ✅ {symbol} aprovado: {turbo_reason} (risk_mult={risk_mult})")
                         validated_decisions.append(parsed)
                     else:
                         self.logger.info(f"[TURBO] 🚫 {symbol} rejeitado: {turbo_reason}")
@@ -1901,11 +1911,20 @@ class HyperliquidBot:
         # Obtém risco base do modo atual (ex: 1.0% para Swing Agressivo, 0.5% Conservador)
         base_risk_pct = self.mode_manager.get_risk_per_trade(ai_type)
         
+        # [TURBO/PAPER] Aplica risk_multiplier se vem do Turbo (tendência neutra, etc)
+        turbo_risk_mult = decision.get('risk_multiplier', 1.0)
+        if turbo_risk_mult < 1.0:
+            original_risk = base_risk_pct
+            base_risk_pct = base_risk_pct * turbo_risk_mult
+            self.logger.info(
+                f"🛡️ [TURBO] Risco ajustado: {original_risk}% × {turbo_risk_mult} = {base_risk_pct:.2f}%"
+            )
+        
         # Se for scalp, pode aplicar redutor adicional se necessário, mas o mode_config já define bem
         risk_multiplier = 1.0
         
         # Log do risco sendo usado
-        self.logger.info(f"🛡️ Risco Base ({ai_type.upper()}): {base_risk_pct}% (Modo: {self.mode_manager.current_mode.value})")
+        self.logger.info(f"🛡️ Risco Final ({ai_type.upper()}): {base_risk_pct:.2f}% (Modo: {self.mode_manager.current_mode.value})")
 
         # 2. Tenta usar STOP ESTRUTURAL primeiro (Prioridade Tarefa 3)
         structural_stop = decision.get("structural_stop_price")
