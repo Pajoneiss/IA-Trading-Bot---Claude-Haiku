@@ -2164,18 +2164,37 @@ class TelegramInteractivePRO:
             # Chama IA
             response = global_ia.chat_with_trader(state, question)
             
-            # Envia resposta
-            # Divide em chunks se muito longo
+            # Envia resposta usando safe_send (evita erro 400 de parse)
             if len(response) > 4000:
                 chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
                 for chunk in chunks:
-                    self.bot.send_message(chat_id, chunk, parse_mode=None)
+                    self._safe_send_message(chat_id, chunk, parse_mode=None)
             else:
-                self.bot.send_message(chat_id, f"🧠 *Trader IA:*\n\n{response}", parse_mode='Markdown')
+                self._safe_send_message(chat_id, f"🧠 *Trader IA:*\n\n{response}", parse_mode='Markdown')
                 
         except Exception as e:
             logger.error(f"[TELEGRAM] Erro no chat IA: {e}")
-            self.bot.send_message(chat_id, f"❌ Erro: {str(e)}", parse_mode=None)
+            self._safe_send_message(chat_id, f"❌ Erro: {str(e)}", parse_mode=None)
+    
+    def _safe_send_message(self, chat_id: int, text: str, parse_mode: str = 'Markdown'):
+        """
+        Envia mensagem com fallback para texto puro se der erro de parse.
+        Evita erro 400: can't parse entities
+        """
+        try:
+            self.bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode)
+        except Exception as e:
+            error_str = str(e).lower()
+            if "can't parse entities" in error_str or "bad request" in error_str:
+                logger.warning(f"[TELEGRAM] Fallback para texto puro: {e}")
+                try:
+                    # Remove caracteres problemáticos de Markdown
+                    clean_text = text.replace('*', '').replace('_', '').replace('`', '').replace('[', '').replace(']', '')
+                    self.bot.send_message(chat_id=chat_id, text=clean_text, parse_mode=None)
+                except Exception as e2:
+                    logger.error(f"[TELEGRAM] Erro mesmo sem parse_mode: {e2}")
+            else:
+                logger.error(f"[TELEGRAM] Erro ao enviar mensagem: {e}")
     
     def _build_current_state(self) -> Dict:
         """Monta state atual para a IA"""
