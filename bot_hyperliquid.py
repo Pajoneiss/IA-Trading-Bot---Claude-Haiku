@@ -1733,9 +1733,55 @@ class HyperliquidBot:
         4. Faz validações TÉCNICAS mínimas
         
         SEM FALLBACK: se actions=[], bot não faz nada.
+        
+        AGENDAMENTO INTELIGENTE:
+        - Sem posições: chama IA a cada 30 minutos
+        - Com posições: chama IA a cada 15 minutos
         """
+        from datetime import datetime, timedelta
+        
+        # ========== CONTROLE DE TIMING ==========
+        # Inicializa variável de controle se não existir
+        if not hasattr(self, 'last_global_ia_call'):
+            self.last_global_ia_call = None
+        
+        # Verifica se há posições abertas
+        has_positions = self.position_manager.get_positions_count() > 0
+        
+        # Define intervalo: 15 min com posições, 30 min sem posições
+        if has_positions:
+            min_interval = timedelta(minutes=15)
+            interval_str = "15min"
+        else:
+            min_interval = timedelta(minutes=30)
+            interval_str = "30min"
+        
+        now = datetime.now()
+        
+        # Verifica se já passou o intervalo mínimo
+        if self.last_global_ia_call is not None:
+            elapsed = now - self.last_global_ia_call
+            if elapsed < min_interval:
+                remaining = min_interval - elapsed
+                remaining_min = remaining.total_seconds() / 60
+                self.logger.info(
+                    f"[GLOBAL_IA] ⏳ Próxima decisão em {remaining_min:.1f} min "
+                    f"(intervalo={interval_str}, has_positions={has_positions})"
+                )
+                return
+        
+        # Verifica AI Budget
+        if hasattr(self, 'ai_budget_manager') and self.ai_budget_manager:
+            if not self.ai_budget_manager.can_call_claude():
+                self.logger.warning("[GLOBAL_IA] 🚫 Budget diário de Claude esgotado, pulando decisão global.")
+                return
+        
+        # Atualiza timestamp
+        self.last_global_ia_call = now
+        
         self.logger.info("🧠 [GLOBAL_IA] ════════════════════════════════════════")
         self.logger.info("🧠 [GLOBAL_IA] MODO 100% AUTÔNOMO - IA decide TUDO")
+        self.logger.info(f"🧠 [GLOBAL_IA] Intervalo: {interval_str} | Posições: {has_positions}")
         self.logger.info("🧠 [GLOBAL_IA] ════════════════════════════════════════")
         
         try:
@@ -2284,6 +2330,90 @@ class HyperliquidBot:
                     self.position_manager.update_position(symbol, new_size, pos.entry_price)
         except Exception as e:
             self.logger.error(f"Erro ao realizar parcial: {e}")
+    
+    def _execute_partial_close(self, symbol: str, percent: float, reason: str = ""):
+        """
+        Fecha parcialmente a posição em `symbol` usando `percent`% do tamanho atual.
+        
+        Args:
+            symbol: Símbolo da posição
+            percent: Percentual a fechar (0-100). Ex: 50.0 = 50%
+            reason: Motivo do fechamento parcial
+            
+        Usado pelo GLOBAL_IA para intent='decrease'
+        """
+        if not self.position_manager.has_position(symbol):
+            self.logger.warning(f"[PARTIAL_CLOSE] Posição {symbol} não encontrada")
+            return
+        
+        pos = self.position_manager.get_position(symbol)
+        
+        # Normaliza percent para 0-1
+        if percent > 1:
+            percent = percent / 100
+        
+        # Calcula tamanho da redução
+        reduce_size = pos.size * percent
+        
+        # Arredonda size
+        sz_decimals = self.client.sz_decimals_cache.get(symbol, 4)
+        reduce_size = round(reduce_size, sz_decimals)
+        
+        if reduce_size <= 0:
+            self.logger.warning(f"[PARTIAL_CLOSE] {symbol} reduce_size <= 0")
+            return
+        
+        self.logger.info(
+            f"✂️ [PARTIAL_CLOSE] {symbol} | "
+            f"Fechando {percent*100:.1f}% ({reduce_size}) | "
+            f"Motivo: {reason}"
+        )
+        
+        # Busca preço atual
+        try:
+            all_prices = self.client.get_all_mids()
+            current_price = float(all_prices.get(symbol, 0))
+        except:
+            current_price = pos.entry_price  # Fallback
+        
+        if not self.live_trading:
+            # Simulação (PAPER)
+            new_size = pos.size - reduce_size
+            if new_size < 0.0001:
+                self.position_manager.remove_position(symbol)
+                self.logger.info(f"[PARTIAL_CLOSE] {symbol} posição zerada (PAPER)")
+            else:
+                self.position_manager.update_position(symbol, new_size, pos.entry_price)
+                self.logger.info(f"[PARTIAL_CLOSE] {symbol} novo size: {new_size} (PAPER)")
+            return
+        
+        # LIVE: Executa na exchange (Reduce Only)
+        try:
+            # Inverte lado para fechar
+            is_buy_close = (pos.side == 'short')
+            
+            result = self.client.place_order(
+                coin=symbol,
+                is_buy=is_buy_close,
+                size=reduce_size,
+                price=current_price,
+                order_type="market",
+                reduce_only=True
+            )
+            
+            if result.get('status') == 'ok':
+                new_size = pos.size - reduce_size
+                if new_size < 0.0001:
+                    self.position_manager.remove_position(symbol)
+                    self.logger.info(f"[PARTIAL_CLOSE] {symbol} posição fechada completamente")
+                else:
+                    self.position_manager.update_position(symbol, new_size, pos.entry_price)
+                    self.logger.info(f"[PARTIAL_CLOSE] {symbol} novo size: {new_size}")
+            else:
+                self.logger.error(f"[PARTIAL_CLOSE] Erro: {result}")
+                
+        except Exception as e:
+            self.logger.error(f"[PARTIAL_CLOSE] Erro ao executar: {e}")
     
     def _execute_open(self, decision: Dict[str, Any], prices: Dict[str, float]) -> bool:
         """Executa abertura de posição - USA VALORES DA IA
