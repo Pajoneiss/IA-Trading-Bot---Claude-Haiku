@@ -1720,24 +1720,32 @@ class HyperliquidBot:
         """
         Iteração do MODO GLOBAL_IA
         
-        IA é 100% responsável por todas as decisões.
-        Bypass de filtros tradicionais (CooldownManager, TrendGuard, etc).
+        IA é 100% AUTÔNOMA - decide TUDO:
+        - Entradas, saídas, parciais, reversões
+        - Tamanho, alavancagem, SL/TP
+        - Quais pares operar
+        - Timing de entrada/saída
         
-        Fluxo:
-        1. build_global_state() → Monta STATE
-        2. call_claude_global() → Recebe ações
-        3. validate_action() → Sanity checks apenas
-        4. execute_global_actions() → Executa sem filtros
+        O BOT NÃO DECIDE NADA - apenas:
+        1. Coleta dados (STATE)
+        2. Chama a IA
+        3. Executa as ACTIONS recebidas
+        4. Faz validações TÉCNICAS mínimas
+        
+        SEM FALLBACK: se actions=[], bot não faz nada.
         """
-        self.logger.info("🧠 [GLOBAL_IA] Iniciando iteração...")
+        self.logger.info("🧠 [GLOBAL_IA] ════════════════════════════════════════")
+        self.logger.info("🧠 [GLOBAL_IA] MODO 100% AUTÔNOMO - IA decide TUDO")
+        self.logger.info("🧠 [GLOBAL_IA] ════════════════════════════════════════")
         
         try:
-            from bot.global_ia_mode import get_global_ia_mode, GlobalAction
+            from bot.global_ia_mode import get_global_ia_mode
             
             global_ia = get_global_ia_mode(logger_instance=self.logger)
             
-            # 1. Busca dados de mercado
-            self.logger.info("[GLOBAL_IA] Buscando dados de mercado...")
+            # ========== 1. COLETA DE DADOS (APENAS DADOS) ==========
+            self.logger.info("[GLOBAL_IA] 📊 Coletando dados de mercado...")
+            
             user_state = self.client.get_user_state()
             all_prices = self.client.get_all_mids()
             positions_raw = self.client.get_positions()
@@ -1746,61 +1754,78 @@ class HyperliquidBot:
             margin_used = float(user_state.get('margin_used', 0))
             free_margin = equity - margin_used
             
+            # Atualiza managers (apenas para tracking, não para decisão)
             self.risk_manager.update_equity(equity)
             self.position_manager.sync_with_exchange(positions_raw)
             
-            # 2. Monta market snapshot
+            # ========== 2. MONTA MARKET SNAPSHOT (DADOS PUROS) ==========
+            # A IA recebe APENAS dados - ela decide o que fazer com eles
             market_snapshot = []
-            for pair in self.trading_pairs[:10]:  # Limita a 10 para não estourar tokens
+            
+            for pair in self.trading_pairs[:12]:  # Top 12 pares
                 try:
                     price = all_prices.get(pair)
                     if not price:
                         continue
                     
-                    candles = self._fetch_candles_cached(pair, interval="1h", limit=50)
+                    price = float(price)
                     
-                    # Análise básica
-                    context = {
+                    # Busca candles para calcular métricas básicas
+                    candles_1h = self._fetch_candles_cached(pair, interval="1h", limit=50)
+                    candles_4h = self._fetch_candles_cached(pair, interval="4h", limit=30)
+                    
+                    # Calcula métricas simples (informativas, não decisivas)
+                    change_1h = 0
+                    change_24h = 0
+                    volatility = "normal"
+                    trend_simple = "neutral"
+                    
+                    if candles_1h and len(candles_1h) > 1:
+                        # Change 1h
+                        c1 = float(candles_1h[-1].get('c', candles_1h[-1].get('close', price)))
+                        c2 = float(candles_1h[-2].get('c', candles_1h[-2].get('close', price)))
+                        if c2 > 0:
+                            change_1h = ((c1 - c2) / c2) * 100
+                        
+                        # Change 24h (aproximado)
+                        if len(candles_1h) >= 24:
+                            c24 = float(candles_1h[-24].get('c', candles_1h[-24].get('close', price)))
+                            if c24 > 0:
+                                change_24h = ((price - c24) / c24) * 100
+                        
+                        # Volatilidade simples (range das últimas 10 velas)
+                        recent = candles_1h[-10:]
+                        highs = [float(c.get('h', c.get('high', 0))) for c in recent]
+                        lows = [float(c.get('l', c.get('low', 0))) for c in recent]
+                        if highs and lows and min(lows) > 0:
+                            vol_pct = ((max(highs) - min(lows)) / min(lows)) * 100
+                            if vol_pct > 5:
+                                volatility = "high"
+                            elif vol_pct > 2:
+                                volatility = "medium"
+                            else:
+                                volatility = "low"
+                    
+                    # Trend simples baseado em preço vs média
+                    if candles_4h and len(candles_4h) >= 10:
+                        closes = [float(c.get('c', c.get('close', 0))) for c in candles_4h[-10:]]
+                        if closes:
+                            avg = sum(closes) / len(closes)
+                            if price > avg * 1.02:
+                                trend_simple = "bullish"
+                            elif price < avg * 0.98:
+                                trend_simple = "bearish"
+                    
+                    snapshot = {
                         'symbol': pair,
-                        'price': float(price),
-                        'trend_bias': 'neutral',
-                        'regime': 'unknown',
-                        'core_analysis': {'has_valid_setup': False}
+                        'price': price,
+                        'change_1h_pct': round(change_1h, 2),
+                        'change_24h_pct': round(change_24h, 2),
+                        'volatility': volatility,
+                        'trend': trend_simple
                     }
                     
-                    # Core Strategy se disponível
-                    if hasattr(self, '_core_strategy') and candles:
-                        try:
-                            candles_1d = self._fetch_candles_cached(pair, interval="1d", limit=50)
-                            candles_4h = self._fetch_candles_cached(pair, interval="4h", limit=100)
-                            candles_15m = self._fetch_candles_cached(pair, interval="15m", limit=100)
-                            
-                            # Normaliza
-                            from bot.phase2 import TechnicalAnalysis
-                            ta = TechnicalAnalysis()
-                            candles_1d_norm = ta.normalize_candles(candles_1d) if candles_1d else []
-                            candles_4h_norm = ta.normalize_candles(candles_4h) if candles_4h else []
-                            candles_1h_norm = ta.normalize_candles(candles) if candles else []
-                            candles_15m_norm = ta.normalize_candles(candles_15m) if candles_15m else []
-                            
-                            core_analysis = self._core_strategy.analyze_symbol(
-                                symbol=pair,
-                                candles_1d=candles_1d_norm,
-                                candles_4h=candles_4h_norm,
-                                candles_1h=candles_1h_norm,
-                                candles_15m=candles_15m_norm
-                            )
-                            
-                            context['trend_bias'] = core_analysis.trend_bias.value
-                            context['core_analysis'] = {
-                                'has_valid_setup': core_analysis.has_valid_setup,
-                                'setup_type': core_analysis.setup_type,
-                                'setup_reason': core_analysis.setup_reason
-                            }
-                        except Exception as e:
-                            self.logger.debug(f"[GLOBAL_IA] Core analysis error for {pair}: {e}")
-                    
-                    market_snapshot.append(context)
+                    market_snapshot.append(snapshot)
                     
                 except Exception as e:
                     self.logger.debug(f"[GLOBAL_IA] Erro ao processar {pair}: {e}")
@@ -1808,10 +1833,13 @@ class HyperliquidBot:
             # Salva para uso no Telegram /ia
             self.last_market_contexts = market_snapshot
             
-            # 3. Posições formatadas
+            # ========== 3. POSIÇÕES ATUAIS ==========
             positions = self.position_manager.get_all_positions(current_prices=all_prices)
             
-            # 4. Monta STATE
+            self.logger.info(f"[GLOBAL_IA] 📊 Equity: ${equity:.2f} | Margin livre: ${free_margin:.2f}")
+            self.logger.info(f"[GLOBAL_IA] 📊 Posições: {len(positions)} | Símbolos monitorados: {len(market_snapshot)}")
+            
+            # ========== 4. MONTA STATE COMPLETO ==========
             state = global_ia.build_global_state(
                 equity=equity,
                 free_margin=free_margin,
@@ -1820,34 +1848,50 @@ class HyperliquidBot:
                 market_snapshot=market_snapshot
             )
             
-            self.logger.info(f"[GLOBAL_IA] STATE montado: equity=${equity:.2f}, {len(positions)} posições, {len(market_snapshot)} símbolos")
+            # ========== 5. CHAMA A IA (ELA DECIDE TUDO) ==========
+            self.logger.info("[GLOBAL_IA] 🧠 Chamando Claude - IA decide 100% das ações...")
             
-            # 5. Chama Claude
             analysis, actions = global_ia.call_claude_global(state)
             
-            self.logger.info(f"[GLOBAL_IA] Análise: {analysis[:100]}...")
-            self.logger.info(f"[GLOBAL_IA] {len(actions)} ações recebidas")
+            # LOG da resposta bruta
+            self.logger.info(f"[GLOBAL_IA] [AI RAW] Análise: {analysis}")
+            self.logger.info(f"[GLOBAL_IA] [AI RAW] {len(actions)} ações recebidas")
             
-            # 6. Executa ações
+            # ========== 6. EXECUTA AÇÕES (SEM FALLBACK) ==========
+            if not actions:
+                self.logger.info("[GLOBAL_IA] 📭 IA decidiu: NENHUMA AÇÃO")
+                self.logger.info("[GLOBAL_IA] ✅ Iteração completa (sem trades)")
+                return
+            
             for action in actions:
-                # Valida (sanity check apenas)
+                self.logger.info(f"[GLOBAL_IA] ➡️ Processando: {action.symbol} {action.intent}")
+                
+                # Validação TÉCNICA apenas (não de estratégia)
                 is_valid, reason = global_ia.validate_action(action, equity, free_margin)
                 
                 if not is_valid:
+                    # LOG detalhado de bloqueio técnico
                     self.logger.warning(
-                        f"[GLOBAL_IA] ⚠️ AI_ACTION_BLOCKED symbol={action.symbol} "
-                        f"intent={action.intent} reason=\"{reason}\""
+                        f"[GLOBAL_IA] ⚠️ [AI ACTION BLOCKED]\n"
+                        f"  symbol={action.symbol}\n"
+                        f"  intent={action.intent}\n"
+                        f"  size_usd_original={action.size_usd}\n"
+                        f"  reason=\"{reason}\""
                     )
                     # Notifica via Telegram
-                    self.telegram.send_message(
-                        f"🚫 *Ação Bloqueada*\n"
-                        f"Symbol: {action.symbol}\n"
-                        f"Intent: {action.intent}\n"
-                        f"Reason: {reason}"
-                    )
+                    try:
+                        self.telegram.send_message(
+                            f"🚫 *Ação Bloqueada (técnico)*\n"
+                            f"Symbol: `{action.symbol}`\n"
+                            f"Intent: `{action.intent}`\n"
+                            f"Size: ${action.size_usd}\n"
+                            f"Reason: {reason}"
+                        )
+                    except:
+                        pass
                     continue
                 
-                # Executa
+                # EXECUTA (sem filtros, sem cooldowns, sem travas)
                 self._execute_global_action(action, all_prices)
             
             self.logger.info("[GLOBAL_IA] ✅ Iteração GLOBAL_IA completa")
