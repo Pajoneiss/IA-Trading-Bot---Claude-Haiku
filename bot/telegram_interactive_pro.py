@@ -297,6 +297,62 @@ class TelegramInteractivePRO:
             except Exception as e:
                 logger.error(f"[TELEGRAM] Erro no comando /paper_vs_real: {e}")
         
+        # === MODO GLOBAL_IA: CHAT COM TRADER ===
+        @self.bot.message_handler(commands=['ia', 'trader', 'chat'])
+        def handle_ia_chat(message):
+            """Comando /ia <pergunta> - Chat com o Trader IA"""
+            try:
+                # Extrai a pergunta (remove o comando)
+                text = message.text
+                question = text.split(maxsplit=1)[1] if ' ' in text else ''
+                
+                if not question:
+                    self.bot.send_message(
+                        message.chat.id,
+                        "🧠 *Chat com Trader IA*\n\n"
+                        "Use: `/ia <sua pergunta>`\n\n"
+                        "Exemplos:\n"
+                        "• `/ia Por que você abriu BTC long?`\n"
+                        "• `/ia Qual sua visão do mercado agora?`\n"
+                        "• `/ia Devo aumentar minha posição em SOL?`\n"
+                        "• `/ia Quais oportunidades você vê?`",
+                        parse_mode='Markdown'
+                    )
+                    return
+                
+                self.bot.send_message(message.chat.id, "🧠 Pensando...")
+                self._handle_ia_chat(message.chat.id, question)
+                
+            except Exception as e:
+                logger.error(f"[TELEGRAM] Erro no comando /ia: {e}")
+                self.bot.send_message(message.chat.id, f"❌ Erro: {str(e)}")
+        
+        @self.bot.message_handler(commands=['modo_global', 'global', 'global_ia'])
+        def handle_modo_global(message):
+            """Comando /modo_global [on|off] - Ativa/desativa modo GLOBAL_IA"""
+            try:
+                text = message.text.lower()
+                
+                if 'on' in text or 'ativar' in text:
+                    self._set_global_mode(message.chat.id, True)
+                elif 'off' in text or 'desativar' in text:
+                    self._set_global_mode(message.chat.id, False)
+                else:
+                    # Mostra status atual
+                    self._show_global_mode_status(message.chat.id)
+                    
+            except Exception as e:
+                logger.error(f"[TELEGRAM] Erro no comando /modo_global: {e}")
+                self.bot.send_message(message.chat.id, f"❌ Erro: {str(e)}")
+        
+        @self.bot.message_handler(commands=['state', 'status_global'])
+        def handle_state(message):
+            """Comando /state - Mostra o STATE atual que a IA vê"""
+            try:
+                self._send_global_state(message.chat.id)
+            except Exception as e:
+                logger.error(f"[TELEGRAM] Erro no comando /state: {e}")
+        
         # Callback handler (para confirmações)
         @self.bot.callback_query_handler(func=lambda call: True)
         def callback_query(call):
@@ -2065,3 +2121,169 @@ class TelegramInteractivePRO:
             'is_running': self.is_running,
             'thread_alive': self.thread.is_alive() if self.thread else False
         }
+    
+    # ========== MODO GLOBAL_IA ==========
+    
+    def _handle_ia_chat(self, chat_id: int, question: str):
+        """Processa pergunta para o Trader IA"""
+        try:
+            from bot.global_ia_mode import get_global_ia_mode
+            
+            global_ia = get_global_ia_mode(logger_instance=logger)
+            
+            # Monta state atual
+            state = self._build_current_state()
+            
+            # Chama IA
+            response = global_ia.chat_with_trader(state, question)
+            
+            # Envia resposta
+            # Divide em chunks se muito longo
+            if len(response) > 4000:
+                chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
+                for chunk in chunks:
+                    self.bot.send_message(chat_id, chunk, parse_mode=None)
+            else:
+                self.bot.send_message(chat_id, f"🧠 *Trader IA:*\n\n{response}", parse_mode='Markdown')
+                
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro no chat IA: {e}")
+            self.bot.send_message(chat_id, f"❌ Erro: {str(e)}", parse_mode=None)
+    
+    def _build_current_state(self) -> Dict:
+        """Monta state atual para a IA"""
+        try:
+            from bot.global_ia_mode import get_global_ia_mode
+            
+            global_ia = get_global_ia_mode(logger_instance=logger)
+            
+            # Equity e margem
+            risk_manager = getattr(self.main_bot, 'risk_manager', None)
+            equity = risk_manager.current_equity if risk_manager else 1000
+            free_margin = equity * 0.8  # Estimativa
+            day_pnl = risk_manager.daily_pnl_pct if risk_manager else 0
+            
+            # Posições
+            position_manager = getattr(self.main_bot, 'position_manager', None)
+            positions = []
+            if position_manager:
+                try:
+                    all_prices = self.main_bot.client.get_all_mids()
+                except:
+                    all_prices = {}
+                positions = position_manager.get_all_positions(current_prices=all_prices)
+            
+            # Market snapshot
+            market_snapshot = []
+            last_contexts = getattr(self.main_bot, 'last_market_contexts', [])
+            if last_contexts:
+                market_snapshot = last_contexts
+            
+            # Monta state
+            state = global_ia.build_global_state(
+                equity=equity,
+                free_margin=free_margin,
+                day_pnl_pct=day_pnl,
+                positions=positions,
+                market_snapshot=market_snapshot
+            )
+            
+            return state
+            
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro ao montar state: {e}")
+            return {"error": str(e), "timestamp": datetime.now().isoformat()}
+    
+    def _set_global_mode(self, chat_id: int, enable: bool):
+        """Ativa/desativa modo GLOBAL_IA"""
+        try:
+            from bot.phase5 import TradingMode, TradingModeManager
+            
+            mode_manager = getattr(self.main_bot, 'mode_manager', None)
+            if not mode_manager:
+                mode_manager = TradingModeManager()
+            
+            if enable:
+                success = mode_manager.set_mode(TradingMode.GLOBAL_IA, source="telegram")
+                if success:
+                    msg = (
+                        "🧠 *MODO GLOBAL\\_IA ATIVADO*\n\n"
+                        "A IA agora é 100% responsável pelas decisões de trading.\n\n"
+                        "• Filtros tradicionais: *BYPASS*\n"
+                        "• Cooldowns: *IGNORADOS*\n"
+                        "• Quality Gate: *MÍNIMO*\n\n"
+                        "Use `/ia <pergunta>` para conversar com o trader.\n"
+                        "Use `/modo_global off` para desativar."
+                    )
+                else:
+                    msg = "❌ Erro ao ativar modo GLOBAL\\_IA"
+            else:
+                success = mode_manager.set_mode(TradingMode.BALANCEADO, source="telegram")
+                if success:
+                    msg = (
+                        "⚖️ *MODO GLOBAL\\_IA DESATIVADO*\n\n"
+                        "Voltando para modo BALANCEADO.\n"
+                        "Filtros e proteções reativados."
+                    )
+                else:
+                    msg = "❌ Erro ao desativar modo GLOBAL\\_IA"
+            
+            self.bot.send_message(chat_id, msg, parse_mode='Markdown')
+            
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro ao alterar modo global: {e}")
+            self.bot.send_message(chat_id, f"❌ Erro: {str(e)}", parse_mode=None)
+    
+    def _show_global_mode_status(self, chat_id: int):
+        """Mostra status do modo GLOBAL_IA"""
+        try:
+            from bot.phase5 import TradingMode
+            
+            mode_manager = getattr(self.main_bot, 'mode_manager', None)
+            current_mode = mode_manager.current_mode if mode_manager else TradingMode.BALANCEADO
+            
+            is_global = current_mode == TradingMode.GLOBAL_IA
+            
+            msg = "🧠 *Status do Modo GLOBAL\\_IA*\n\n"
+            
+            if is_global:
+                msg += "✅ *ATIVO*\n\n"
+                msg += "A IA está 100% no controle.\n"
+                msg += "Filtros tradicionais estão em BYPASS.\n\n"
+                msg += "Comandos:\n"
+                msg += "• `/ia <pergunta>` - Conversar com trader\n"
+                msg += "• `/state` - Ver estado atual\n"
+                msg += "• `/modo_global off` - Desativar"
+            else:
+                msg += f"❌ *INATIVO* (modo atual: {current_mode.value})\n\n"
+                msg += "Comandos:\n"
+                msg += "• `/modo_global on` - Ativar modo GLOBAL\\_IA\n"
+                msg += "• `/ia <pergunta>` - Conversar com trader (funciona sempre)"
+            
+            self.bot.send_message(chat_id, msg, parse_mode='Markdown')
+            
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro ao mostrar status global: {e}")
+            self.bot.send_message(chat_id, f"❌ Erro: {str(e)}", parse_mode=None)
+    
+    def _send_global_state(self, chat_id: int):
+        """Envia o STATE atual que a IA vê"""
+        try:
+            import json
+            
+            state = self._build_current_state()
+            
+            # Formata como JSON bonito
+            state_json = json.dumps(state, indent=2, ensure_ascii=False)
+            
+            msg = "🧠 *STATE Atual (visão da IA)*\n\n"
+            msg += f"```json\n{state_json[:3500]}\n```"  # Limita tamanho
+            
+            if len(state_json) > 3500:
+                msg += "\n\n_(truncado por limite de tamanho)_"
+            
+            self.bot.send_message(chat_id, msg, parse_mode='Markdown')
+            
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro ao enviar state: {e}")
+            self.bot.send_message(chat_id, f"❌ Erro: {str(e)}", parse_mode=None)
