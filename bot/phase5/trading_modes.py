@@ -16,6 +16,7 @@ class TradingMode(Enum):
     CONSERVADOR = "CONSERVADOR"
     BALANCEADO = "BALANCEADO"
     AGRESSIVO = "AGRESSIVO"
+    GLOBAL_IA = "GLOBAL_IA"  # Modo onde IA é 100% responsável
 
 
 class TradingModeConfig:
@@ -61,6 +62,18 @@ class TradingModeConfig:
             'quality_gate_strictness': 0.9,  # 10% mais permissivo
             'description': '🔥 Mais trades com risco controlado',
             'emoji': '🔥'
+        },
+        TradingMode.GLOBAL_IA: {
+            'risk_multiplier': 1.0,  # IA decide o risco
+            'confidence_delta_swing': -0.10,  # -10% (IA é o cérebro)
+            'confidence_delta_scalp': -0.10,  # -10%
+            'max_signals_per_day': 100,  # Sem limite prático
+            'allowed_regimes': ['TREND_BULL', 'TREND_BEAR', 'RANGE_CHOP', 'LOW_VOL_DRIFT', 'HIGH_VOL'],
+            'quality_gate_strictness': 0.5,  # Mínimo - IA decide
+            'bypass_filters': True,  # Ignora filtros tradicionais
+            'bypass_cooldown': True,  # Ignora cooldowns
+            'description': '🧠 IA 100% responsável por decisões',
+            'emoji': '🧠'
         }
     }
     
