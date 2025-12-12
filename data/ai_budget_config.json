@@ -10,7 +10,8 @@
     },
     "swing": {
         "symbols": ["BTC", "ETH"],
-        "timeframes": ["1d", "4h", "1h"]
+        "timeframes": ["1d", "4h", "1h"],
+        "enable_daily_ema_shift": false
     },
     "scalp": {
         "symbols": ["BTC", "ETH", "SOL"],
