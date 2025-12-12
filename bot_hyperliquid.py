@@ -900,6 +900,14 @@ class HyperliquidBot:
             self.logger.info("⏸️ Bot PAUSADO pelo usuário via Telegram. Aguardando...")
             return
         
+        # ========== MODO GLOBAL_IA ==========
+        # Se modo é GLOBAL_IA, executa loop simplificado onde IA é 100% responsável
+        from bot.phase5 import TradingMode
+        if self.mode_manager.current_mode == TradingMode.GLOBAL_IA:
+            self._run_global_ia_iteration()
+            return
+        # ====================================
+        
         # PARTE 2: Contador de novos trades por iteração (máximo 1)
         new_trades_this_iteration = 0
 
@@ -1707,6 +1715,251 @@ class HyperliquidBot:
                     }, all_prices)
         
         self.logger.info("✅ Iteração completa")
+
+    def _run_global_ia_iteration(self):
+        """
+        Iteração do MODO GLOBAL_IA
+        
+        IA é 100% responsável por todas as decisões.
+        Bypass de filtros tradicionais (CooldownManager, TrendGuard, etc).
+        
+        Fluxo:
+        1. build_global_state() → Monta STATE
+        2. call_claude_global() → Recebe ações
+        3. validate_action() → Sanity checks apenas
+        4. execute_global_actions() → Executa sem filtros
+        """
+        self.logger.info("🧠 [GLOBAL_IA] Iniciando iteração...")
+        
+        try:
+            from bot.global_ia_mode import get_global_ia_mode, GlobalAction
+            
+            global_ia = get_global_ia_mode(logger_instance=self.logger)
+            
+            # 1. Busca dados de mercado
+            self.logger.info("[GLOBAL_IA] Buscando dados de mercado...")
+            user_state = self.client.get_user_state()
+            all_prices = self.client.get_all_mids()
+            positions_raw = self.client.get_positions()
+            
+            equity = float(user_state.get('account_value', 0))
+            margin_used = float(user_state.get('margin_used', 0))
+            free_margin = equity - margin_used
+            
+            self.risk_manager.update_equity(equity)
+            self.position_manager.sync_with_exchange(positions_raw)
+            
+            # 2. Monta market snapshot
+            market_snapshot = []
+            for pair in self.trading_pairs[:10]:  # Limita a 10 para não estourar tokens
+                try:
+                    price = all_prices.get(pair)
+                    if not price:
+                        continue
+                    
+                    candles = self._fetch_candles_cached(pair, interval="1h", limit=50)
+                    
+                    # Análise básica
+                    context = {
+                        'symbol': pair,
+                        'price': float(price),
+                        'trend_bias': 'neutral',
+                        'regime': 'unknown',
+                        'core_analysis': {'has_valid_setup': False}
+                    }
+                    
+                    # Core Strategy se disponível
+                    if hasattr(self, '_core_strategy') and candles:
+                        try:
+                            candles_1d = self._fetch_candles_cached(pair, interval="1d", limit=50)
+                            candles_4h = self._fetch_candles_cached(pair, interval="4h", limit=100)
+                            candles_15m = self._fetch_candles_cached(pair, interval="15m", limit=100)
+                            
+                            # Normaliza
+                            from bot.phase2 import TechnicalAnalysis
+                            ta = TechnicalAnalysis()
+                            candles_1d_norm = ta.normalize_candles(candles_1d) if candles_1d else []
+                            candles_4h_norm = ta.normalize_candles(candles_4h) if candles_4h else []
+                            candles_1h_norm = ta.normalize_candles(candles) if candles else []
+                            candles_15m_norm = ta.normalize_candles(candles_15m) if candles_15m else []
+                            
+                            core_analysis = self._core_strategy.analyze_symbol(
+                                symbol=pair,
+                                candles_1d=candles_1d_norm,
+                                candles_4h=candles_4h_norm,
+                                candles_1h=candles_1h_norm,
+                                candles_15m=candles_15m_norm
+                            )
+                            
+                            context['trend_bias'] = core_analysis.trend_bias.value
+                            context['core_analysis'] = {
+                                'has_valid_setup': core_analysis.has_valid_setup,
+                                'setup_type': core_analysis.setup_type,
+                                'setup_reason': core_analysis.setup_reason
+                            }
+                        except Exception as e:
+                            self.logger.debug(f"[GLOBAL_IA] Core analysis error for {pair}: {e}")
+                    
+                    market_snapshot.append(context)
+                    
+                except Exception as e:
+                    self.logger.debug(f"[GLOBAL_IA] Erro ao processar {pair}: {e}")
+            
+            # Salva para uso no Telegram /ia
+            self.last_market_contexts = market_snapshot
+            
+            # 3. Posições formatadas
+            positions = self.position_manager.get_all_positions(current_prices=all_prices)
+            
+            # 4. Monta STATE
+            state = global_ia.build_global_state(
+                equity=equity,
+                free_margin=free_margin,
+                day_pnl_pct=self.risk_manager.daily_pnl_pct,
+                positions=positions,
+                market_snapshot=market_snapshot
+            )
+            
+            self.logger.info(f"[GLOBAL_IA] STATE montado: equity=${equity:.2f}, {len(positions)} posições, {len(market_snapshot)} símbolos")
+            
+            # 5. Chama Claude
+            analysis, actions = global_ia.call_claude_global(state)
+            
+            self.logger.info(f"[GLOBAL_IA] Análise: {analysis[:100]}...")
+            self.logger.info(f"[GLOBAL_IA] {len(actions)} ações recebidas")
+            
+            # 6. Executa ações
+            for action in actions:
+                # Valida (sanity check apenas)
+                is_valid, reason = global_ia.validate_action(action, equity, free_margin)
+                
+                if not is_valid:
+                    self.logger.warning(
+                        f"[GLOBAL_IA] ⚠️ AI_ACTION_BLOCKED symbol={action.symbol} "
+                        f"intent={action.intent} reason=\"{reason}\""
+                    )
+                    # Notifica via Telegram
+                    self.telegram.send_message(
+                        f"🚫 *Ação Bloqueada*\n"
+                        f"Symbol: {action.symbol}\n"
+                        f"Intent: {action.intent}\n"
+                        f"Reason: {reason}"
+                    )
+                    continue
+                
+                # Executa
+                self._execute_global_action(action, all_prices)
+            
+            self.logger.info("[GLOBAL_IA] ✅ Iteração GLOBAL_IA completa")
+            
+        except Exception as e:
+            self.logger.error(f"[GLOBAL_IA] ❌ Erro na iteração: {e}", exc_info=True)
+    
+    def _execute_global_action(self, action, prices: Dict[str, float]):
+        """
+        Executa ação decidida pela IA Global
+        
+        BYPASS de filtros tradicionais - apenas sanity checks
+        """
+        from bot.global_ia_mode import GlobalAction
+        
+        symbol = action.symbol
+        intent = action.intent
+        
+        self.logger.info(f"[GLOBAL_IA] Executando: {symbol} {intent} (${action.size_usd})")
+        
+        try:
+            current_price = float(prices.get(symbol, 0))
+            if current_price <= 0:
+                self.logger.error(f"[GLOBAL_IA] Preço inválido para {symbol}")
+                return
+            
+            # Mapeia intent para ação
+            if intent == 'open_long':
+                decision = {
+                    'symbol': symbol,
+                    'action': 'open',
+                    'side': 'long',
+                    'direction': 'long',
+                    'confidence': 0.85,  # IA sempre confiante
+                    'leverage': action.leverage,
+                    'size_usd': action.size_usd,
+                    'stop_loss_pct': action.stop_loss_pct * 100,  # Converte para %
+                    'take_profit_pct': action.take_profit_pct * 100,
+                    'source': 'global_ia',
+                    'style': 'swing',
+                    'reason': action.reason,
+                    'trigger_type': 'GLOBAL_IA'
+                }
+                self._execute_open(decision, prices)
+                
+            elif intent == 'open_short':
+                decision = {
+                    'symbol': symbol,
+                    'action': 'open',
+                    'side': 'short',
+                    'direction': 'short',
+                    'confidence': 0.85,
+                    'leverage': action.leverage,
+                    'size_usd': action.size_usd,
+                    'stop_loss_pct': action.stop_loss_pct * 100,
+                    'take_profit_pct': action.take_profit_pct * 100,
+                    'source': 'global_ia',
+                    'style': 'swing',
+                    'reason': action.reason,
+                    'trigger_type': 'GLOBAL_IA'
+                }
+                self._execute_open(decision, prices)
+                
+            elif intent == 'close':
+                if self.position_manager.has_position(symbol):
+                    position = self.position_manager.get_position(symbol)
+                    self._execute_close({
+                        'symbol': symbol,
+                        'action': 'close',
+                        'reason': f'GLOBAL_IA: {action.reason}',
+                        'side': position.side,
+                        'current_price': current_price
+                    }, prices)
+                    
+            elif intent == 'increase':
+                if self.position_manager.has_position(symbol):
+                    # Calcula tamanho do aumento
+                    size_usd = action.size_usd
+                    add_size = size_usd / current_price
+                    self._execute_pyramid_add(symbol, add_size, current_price, action.reason)
+                    
+            elif intent == 'decrease':
+                if self.position_manager.has_position(symbol):
+                    pct = action.partial_close_pct or 0.5  # 50% default
+                    self._execute_partial_close(symbol, pct * 100, action.reason)
+                    
+            elif intent == 'adjust_sl':
+                if self.position_manager.has_position(symbol) and action.new_sl_price:
+                    position = self.position_manager.get_position(symbol)
+                    position.update_stop_loss(action.new_sl_price)
+                    self.logger.info(f"[GLOBAL_IA] SL ajustado: {symbol} → ${action.new_sl_price}")
+                    
+            elif intent == 'adjust_tp':
+                if self.position_manager.has_position(symbol) and action.new_tp_price:
+                    position = self.position_manager.get_position(symbol)
+                    position.update_take_profit(action.new_tp_price)
+                    self.logger.info(f"[GLOBAL_IA] TP ajustado: {symbol} → ${action.new_tp_price}")
+                    
+            elif intent == 'breakeven':
+                if self.position_manager.has_position(symbol):
+                    position = self.position_manager.get_position(symbol)
+                    position.move_stop_to_breakeven()
+                    self.logger.info(f"[GLOBAL_IA] SL movido para breakeven: {symbol}")
+                    
+            elif intent == 'hold':
+                self.logger.info(f"[GLOBAL_IA] HOLD: {symbol} - {action.reason}")
+                
+            else:
+                self.logger.warning(f"[GLOBAL_IA] Intent desconhecido: {intent}")
+                
+        except Exception as e:
+            self.logger.error(f"[GLOBAL_IA] Erro ao executar {intent} em {symbol}: {e}")
 
     def _execute_increase(self, decision: Dict[str, Any], prices: Dict[str, float]):
         """Aumenta posição existente (DCA/Piramidagem)"""
