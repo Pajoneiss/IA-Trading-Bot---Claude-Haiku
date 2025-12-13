@@ -659,7 +659,163 @@ def create_api_server(bot=None) -> Optional["FastAPI"]:
             logger.error(f"[DASHBOARD API] Erro no backfill: {e}")
             raise HTTPException(status_code=500, detail=str(e))
     
-    logger.info("[DASHBOARD API] FastAPI server criado (PREMIUM EDITION)")
+    # ========== ENDPOINTS DE THOUGHT FEED ==========
+    
+    @app.get("/api/thoughts")
+    async def get_thoughts(
+        x_api_key: str = Header(None),
+        limit: int = 50,
+        type: str = None,
+        symbol: str = None
+    ):
+        """
+        Retorna pensamentos/insights da IA.
+        
+        Query params:
+            limit: Máximo de pensamentos (default 50)
+            type: Filtro por tipo (analysis, decision, risk, execution, etc)
+            symbol: Filtro por símbolo
+        """
+        verify_api_key(x_api_key)
+        
+        try:
+            from bot.thought_feed import get_thought_feed
+            feed = get_thought_feed()
+            
+            thoughts = feed.get_thoughts(
+                limit=limit,
+                type_filter=type,
+                symbol_filter=symbol
+            )
+            
+            return {
+                "count": len(thoughts),
+                "thoughts": thoughts
+            }
+            
+        except ImportError:
+            return {"error": "Thought feed not available", "thoughts": []}
+        except Exception as e:
+            logger.error(f"[DASHBOARD API] Erro ao buscar thoughts: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.post("/api/ai-chat")
+    async def ai_chat(
+        request: Request,
+        x_api_key: str = Header(None)
+    ):
+        """
+        Chat com a IA Trader.
+        
+        Body: { "message": "sua pergunta" }
+        
+        Returns:
+            { "reply": "resposta da IA", "context": {...}, "used_ai": bool }
+        """
+        verify_api_key(x_api_key)
+        
+        try:
+            body = await request.json()
+            user_message = body.get('message', '')
+            
+            if not user_message:
+                return {"error": "Message is required", "reply": ""}
+            
+            from bot.thought_feed import get_chat_responder
+            bot = get_bot_instance()
+            responder = get_chat_responder(bot)
+            
+            response = responder.respond(user_message)
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"[DASHBOARD API] Erro no ai-chat: {e}")
+            return {
+                "reply": "Desculpe, ocorreu um erro. Tente novamente.",
+                "error": str(e),
+                "used_ai": False
+            }
+    
+    @app.get("/api/performance")
+    async def get_performance(x_api_key: str = Header(None)):
+        """
+        Retorna performance por janelas de tempo.
+        
+        Returns:
+            {
+                "all": {"pnl_usd": X, "pnl_pct": Y},
+                "24h": {...},
+                "7d": {...},
+                "30d": {...},
+                "90d": {...},
+                "180d": {...},
+                "365d": {...}
+            }
+        """
+        verify_api_key(x_api_key)
+        
+        try:
+            from bot.telemetry_store import get_telemetry_store
+            store = get_telemetry_store()
+            
+            # Busca equity atual
+            bot = get_bot_instance()
+            current_equity = None
+            if bot:
+                risk_manager = getattr(bot, 'risk_manager', None)
+                if risk_manager:
+                    current_equity = getattr(risk_manager, 'current_equity', None)
+            
+            # Busca PnL summary (all time + day + week + month)
+            pnl_summary = store.get_pnl_summary(current_equity)
+            
+            # Mapeia para formato de windows
+            result = {
+                "current_equity": current_equity or pnl_summary.get('current_equity', 0),
+                "all": {
+                    "pnl_usd": pnl_summary.get('pnl_all_time_usd', 0),
+                    "pnl_pct": pnl_summary.get('pnl_all_time_pct', 0),
+                    "start_equity": pnl_summary.get('all_time_start_equity'),
+                    "start_date": pnl_summary.get('all_time_start_date')
+                },
+                "24h": {
+                    "pnl_usd": pnl_summary.get('pnl_day_usd', 0),
+                    "pnl_pct": pnl_summary.get('pnl_day_pct', 0)
+                },
+                "7d": {
+                    "pnl_usd": pnl_summary.get('pnl_week_usd', 0),
+                    "pnl_pct": pnl_summary.get('pnl_week_pct', 0)
+                },
+                "30d": {
+                    "pnl_usd": pnl_summary.get('pnl_month_usd', 0),
+                    "pnl_pct": pnl_summary.get('pnl_month_pct', 0)
+                },
+                # 90d, 180d, 365d - para agora, usamos all time como proxy
+                # TODO: Implementar baselines adicionais se necessário
+                "90d": {
+                    "pnl_usd": pnl_summary.get('pnl_all_time_usd', 0),
+                    "pnl_pct": pnl_summary.get('pnl_all_time_pct', 0)
+                },
+                "180d": {
+                    "pnl_usd": pnl_summary.get('pnl_all_time_usd', 0),
+                    "pnl_pct": pnl_summary.get('pnl_all_time_pct', 0)
+                },
+                "365d": {
+                    "pnl_usd": pnl_summary.get('pnl_all_time_usd', 0),
+                    "pnl_pct": pnl_summary.get('pnl_all_time_pct', 0)
+                }
+            }
+            
+            return result
+            
+        except ImportError:
+            return {"error": "Telemetry not available"}
+        except Exception as e:
+            logger.error(f"[DASHBOARD API] Erro ao buscar performance: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    logger.info("[DASHBOARD API] FastAPI server criado (PREMIUM EDITION + THOUGHTS + CHAT)")
     return app
 
 
