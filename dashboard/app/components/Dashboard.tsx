@@ -229,33 +229,56 @@ const PositionsTable = ({ positions }: { positions: Position[] }) => (
 )
 
 // Trades Table
-const TradesTable = ({ fills, range, onRangeChange }: { fills: Fill[]; range: string; onRangeChange: (r: string) => void }) => (
+const TradesTable = ({ fills, range, onRangeChange, onLoadMore, hasMore, total, loading }: {
+  fills: Fill[];
+  range: string;
+  onRangeChange: (r: string) => void;
+  onLoadMore: () => void;
+  hasMore: boolean;
+  total: number;
+  loading: boolean;
+}) => (
   <Card>
     <div className="flex items-center justify-between mb-2">
-      <span className="text-sm font-medium">Recent Fills ({fills.length})</span>
+      <span className="text-sm font-medium">
+        Recent Fills ({fills.length}{total > 0 ? ` of ${total}` : ''})
+      </span>
       <div className="flex gap-1">
         {['7d', '30d', 'all'].map(r => <button key={r} onClick={() => onRangeChange(r)} className={`px-2 py-0.5 rounded text-xs ${range === r ? 'bg-[#00b8ff] text-white' : 'bg-[#2a2a2a] text-gray-400'}`}>{r.toUpperCase()}</button>)}
       </div>
     </div>
     {!fills.length ? <div className="text-gray-500 text-center py-4 text-sm">Nenhum trade</div> : (
-      <div className="overflow-x-auto overflow-y-auto max-h-40">
-        <table className="w-full text-xs">
-          <thead><tr className="text-gray-500 border-b border-[#2a2a2a]">
-            <th className="text-left py-1">Time</th><th className="text-left py-1">Asset</th><th className="text-left py-1">Side</th><th className="text-right py-1">Price</th><th className="text-right py-1">PnL</th>
-          </tr></thead>
-          <tbody>
-            {fills.slice(0, 10).map((f, i) => (
-              <tr key={f.id || i} className="border-b border-[#2a2a2a]/50">
-                <td className="py-1 text-gray-500">{new Date(f.ts).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td>
-                <td className="py-1">{f.symbol}</td>
-                <td className={`py-1 ${f.side === 'buy' || f.side === 'long' || f.side === 'B' ? 'text-[#00ff88]' : 'text-[#ff4d4d]'}`}>{f.side?.toUpperCase()}</td>
-                <td className="py-1 text-right">${f.price?.toFixed(2)}</td>
-                <td className={`py-1 text-right ${f.realized_pnl >= 0 ? 'text-[#00ff88]' : 'text-[#ff4d4d]'}`}>{f.realized_pnl !== 0 ? `${f.realized_pnl >= 0 ? '+' : ''}$${f.realized_pnl.toFixed(2)}` : '—'}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <>
+        <div className="overflow-x-auto overflow-y-auto max-h-40">
+          <table className="w-full text-xs">
+            <thead><tr className="text-gray-500 border-b border-[#2a2a2a]">
+              <th className="text-left py-1">Time</th><th className="text-left py-1">Asset</th><th className="text-left py-1">Side</th><th className="text-right py-1">Price</th><th className="text-right py-1">PnL</th>
+            </tr></thead>
+            <tbody>
+              {fills.map((f, i) => (
+                <tr key={f.id || i} className="border-b border-[#2a2a2a]/50">
+                  <td className="py-1 text-gray-500">{new Date(f.ts).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td>
+                  <td className="py-1">{f.symbol}</td>
+                  <td className={`py-1 ${f.side === 'buy' || f.side === 'long' || f.side === 'B' ? 'text-[#00ff88]' : 'text-[#ff4d4d]'}`}>{f.side?.toUpperCase()}</td>
+                  <td className="py-1 text-right">${f.price?.toFixed(2)}</td>
+                  <td className={`py-1 text-right ${f.realized_pnl >= 0 ? 'text-[#00ff88]' : 'text-[#ff4d4d]'}`}>{f.realized_pnl !== 0 ? `${f.realized_pnl >= 0 ? '+' : ''}$${f.realized_pnl.toFixed(2)}` : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {hasMore && (
+          <div className="mt-2 text-center">
+            <button
+              onClick={onLoadMore}
+              disabled={loading}
+              className={`px-4 py-1 rounded text-xs transition-all ${loading ? 'bg-gray-600 text-gray-400 cursor-not-allowed' : 'bg-[#00b8ff] text-white hover:bg-[#00a0e0]'}`}
+            >
+              {loading ? 'Loading...' : 'Load More'}
+            </button>
+          </div>
+        )}
+      </>
     )}
   </Card>
 )
@@ -409,6 +432,10 @@ export function Dashboard() {
   const [pnlSummary, setPnlSummary] = useState<PnLSummary | null>(null)
   const [equitySeries, setEquitySeries] = useState<EquityPoint[]>([])
   const [fills, setFills] = useState<Fill[]>([])
+  const [fillsCursor, setFillsCursor] = useState<number | null>(null)
+  const [fillsHasMore, setFillsHasMore] = useState(false)
+  const [fillsTotal, setFillsTotal] = useState(0)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [thoughts, setThoughts] = useState<Thought[]>([])
   const [loading, setLoading] = useState(true)
   const [chartRange, setChartRange] = useState('7d')
@@ -428,12 +455,37 @@ export function Dashboard() {
       if (snapRes.ok) { const d = await snapRes.json(); if (!d.error) setSnapshot(d) }
       if (pnlRes.ok) { const d = await pnlRes.json(); if (!d.error) setPnlSummary(d) }
       if (seriesRes.ok) { const d = await seriesRes.json(); setEquitySeries(d.data || []) }
-      if (fillsRes.ok) { const d = await fillsRes.json(); setFills(d.fills || []) }
+      if (fillsRes.ok) {
+        const fillsData = await fillsRes.json()
+        setFills(fillsData.fills || [])
+        setFillsCursor(fillsData.nextCursor || null)
+        setFillsHasMore(fillsData.hasMore || false)
+        setFillsTotal(fillsData.total || 0)
+      }
       if (thoughtsRes.ok) { const d = await (thoughtsRes as Response).json(); setThoughts(d.thoughts || []) }
       setLastUpdate(new Date())
     } catch (e) { console.error(e) }
     finally { setLoading(false) }
   }, [chartRange, tradesRange])
+
+  const loadMoreFills = useCallback(async () => {
+    if (!fillsCursor || loadingMore) return
+
+    setLoadingMore(true)
+    try {
+      const res = await fetch(`/api/bot-fills?range=${tradesRange}&cursor=${fillsCursor}`, { cache: 'no-store' })
+      if (res.ok) {
+        const data = await res.json()
+        setFills(prev => [...prev, ...(data.fills || [])])
+        setFillsCursor(data.nextCursor || null)
+        setFillsHasMore(data.hasMore || false)
+      }
+    } catch (error) {
+      console.error('Error loading more fills:', error)
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [fillsCursor, tradesRange, loadingMore])
 
   useEffect(() => { fetchAll(); const i = setInterval(fetchAll, 10000); return () => clearInterval(i) }, [fetchAll])
 
@@ -462,7 +514,7 @@ export function Dashboard() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
         <PositionsTable positions={snapshot.positions.list} />
-        <TradesTable fills={fills} range={tradesRange} onRangeChange={setTradesRange} />
+        <TradesTable fills={fills} range={tradesRange} onRangeChange={setTradesRange} onLoadMore={loadMoreFills} hasMore={fillsHasMore} total={fillsTotal} loading={loadingMore} />
         <ThoughtFeed thoughts={thoughts} />
         <AIChat />
       </div>

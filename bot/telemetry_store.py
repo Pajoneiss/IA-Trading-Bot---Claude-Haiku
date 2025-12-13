@@ -615,6 +615,110 @@ class TelemetryStore:
             logger.error(f"[TELEMETRY] Erro ao buscar fills: {e}")
             return []
     
+    def get_fills_paginated(self, 
+                            range_hours: int = 168, 
+                            symbol: str = None,
+                            side: str = None,
+                            only_profitable: bool = None,
+                            limit: int = 200,
+                            cursor: int = None,
+                            offset: int = None) -> Dict[str, Any]:
+        """
+        Retorna histórico de fills com paginação cursor-based.
+        
+        Args:
+            range_hours: Janela de tempo (-1 para ALL)
+            symbol: Filtro por símbolo
+            side: Filtro por lado
+            only_profitable: True=wins, False=losses, None=all
+            limit: Máximo de registros por página
+            cursor: ID do último fill da página anterior
+            offset: Alternativa ao cursor (menos eficiente)
+            
+        Returns:
+            {
+                'items': [...],
+                'nextCursor': int or None,
+                'hasMore': bool,
+                'total': int
+            }
+        """
+        if not self.enabled:
+            return {'items': [], 'hasMore': False, 'total': 0, 'nextCursor': None}
+        
+        try:
+            with self.get_session() as session:
+                if session is None:
+                    return {'items': [], 'hasMore': False, 'total': 0, 'nextCursor': None}
+                
+                # Build base query
+                if range_hours == -1:
+                    cutoff = datetime(2020, 1, 1, tzinfo=timezone.utc)
+                else:
+                    cutoff = datetime.now(timezone.utc) - timedelta(hours=range_hours)
+                
+                query = session.query(Fill).filter(Fill.ts_utc >= cutoff)
+                
+                # Apply filters
+                if symbol:
+                    query = query.filter(Fill.symbol == symbol)
+                if side:
+                    query = query.filter(Fill.side == side)
+                if only_profitable is True:
+                    query = query.filter(Fill.realized_pnl > 0)
+                elif only_profitable is False:
+                    query = query.filter(Fill.realized_pnl < 0)
+                
+                # Get total count (before pagination)
+                total = query.count()
+                
+                # Apply cursor/offset pagination
+                if cursor:
+                    # Cursor-based: more efficient for large datasets
+                    query = query.filter(Fill.id < cursor)
+                elif offset:
+                    # Offset-based: fallback
+                    query = query.offset(offset)
+                
+                # Order by timestamp DESC, then by ID DESC for stable sorting
+                query = query.order_by(desc(Fill.ts_utc), desc(Fill.id))
+                
+                # Fetch limit + 1 to check if there are more results
+                records = query.limit(limit + 1).all()
+                
+                # Check if there are more results
+                hasMore = len(records) > limit
+                items = records[:limit]  # Remove the extra item
+                
+                # Next cursor is the ID of the last item
+                nextCursor = items[-1].id if items and hasMore else None
+                
+                return {
+                    'items': [
+                        {
+                            'id': r.id,
+                            'trade_id': r.trade_id,
+                            'ts': r.ts_utc.isoformat(),
+                            'symbol': r.symbol,
+                            'side': r.side,
+                            'qty': r.qty,
+                            'price': r.price,
+                            'fee': r.fee,
+                            'realized_pnl': r.realized_pnl,
+                            'is_close': r.is_close,
+                            'ai_reason': r.ai_reason
+                        }
+                        for r in items
+                    ],
+                    'nextCursor': nextCursor,
+                    'hasMore': hasMore,
+                    'total': total
+                }
+                
+        except Exception as e:
+            logger.error(f"[TELEMETRY] Erro ao buscar fills paginados: {e}")
+            return {'items': [], 'hasMore': False, 'total': 0, 'nextCursor': None}
+    
     # ============================================================
     # PNL SUMMARY
     # ============================================================

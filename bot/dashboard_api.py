@@ -547,17 +547,32 @@ def create_api_server(bot=None) -> Optional["FastAPI"]:
         symbol: str = None,
         side: str = None,
         result: str = None,
-        limit: int = 200
+        limit: int = 200,
+        cursor: int = None,
+        offset: int = None
     ):
         """
-        Retorna histórico de fills/trades.
+        Retorna histórico de fills/trades com paginação.
         
         Query params:
             range: 7d, 30d, all
             symbol: filtro por símbolo
             side: filtro por lado (buy/sell ou long/short)
             result: win, loss, all
-            limit: máximo de registros
+            limit: máximo de registros por página (default 200)
+            cursor: ID do último fill da página anterior (para paginação)
+            offset: offset alternativo (menos eficiente que cursor)
+        
+        Returns:
+            {
+                "range": "7d",
+                "filters": {...},
+                "count": 200,
+                "fills": [...],
+                "nextCursor": 12345,
+                "hasMore": true,
+                "total": 450
+            }
         """
         verify_api_key(x_api_key)
         
@@ -574,26 +589,33 @@ def create_api_server(bot=None) -> Optional["FastAPI"]:
             elif result == "loss":
                 only_profitable = False
             
-            fills = store.get_fills(
+            # Use new paginated method
+            paginated_result = store.get_fills_paginated(
                 range_hours=range_hours,
                 symbol=symbol,
                 side=side,
                 only_profitable=only_profitable,
-                limit=limit
+                limit=limit,
+                cursor=cursor,
+                offset=offset
             )
             
             return {
                 "range": range,
                 "filters": {"symbol": symbol, "side": side, "result": result},
-                "count": len(fills),
-                "fills": fills
+                "count": len(paginated_result['items']),
+                "fills": paginated_result['items'],
+                "nextCursor": paginated_result.get('nextCursor'),
+                "hasMore": paginated_result.get('hasMore', False),
+                "total": paginated_result.get('total', 0)
             }
             
         except ImportError:
-            return {"error": "Telemetry not available", "fills": []}
+            return {"error": "Telemetry not available", "fills": [], "hasMore": False, "total": 0}
         except Exception as e:
             logger.error(f"[DASHBOARD API] Erro ao buscar fills: {e}")
             raise HTTPException(status_code=500, detail=str(e))
+
     
     @app.get("/api/metrics")
     async def get_full_metrics(
