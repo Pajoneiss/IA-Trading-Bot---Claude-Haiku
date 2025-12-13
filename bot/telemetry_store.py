@@ -329,6 +329,68 @@ class TelemetryStore:
         except Exception as e:
             logger.error(f"[TELEMETRY] Erro ao atualizar baselines: {e}")
     
+    def set_initial_equity(self, initial_equity: float, start_date: str = None) -> bool:
+        """
+        Define o equity inicial para cálculo de PnL ALL TIME.
+        
+        Útil quando o bot começou depois da conta já existir na exchange.
+        
+        Args:
+            initial_equity: Equity inicial em USD
+            start_date: Data de início (ISO format: "2024-11-01")
+            
+        Returns:
+            True se sucesso
+        """
+        if not self.enabled:
+            return False
+        
+        try:
+            from datetime import datetime
+            
+            # Parse start_date se fornecido
+            if start_date:
+                start_ts = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                if start_ts.tzinfo is None:
+                    start_ts = start_ts.replace(tzinfo=timezone.utc)
+            else:
+                start_ts = datetime.now(timezone.utc)
+            
+            with self.get_session() as session:
+                if session is None:
+                    return False
+                
+                # Busca ou cria baseline ALL_TIME
+                all_time = session.query(PerformanceBaseline).filter_by(
+                    period_key='all_time', user_id='default'
+                ).first()
+                
+                if all_time:
+                    old_equity = all_time.start_equity
+                    all_time.start_equity = initial_equity
+                    all_time.start_ts = start_ts
+                    logger.info(
+                        f"[TELEMETRY] 📊 Baseline ALL_TIME ATUALIZADO: "
+                        f"${old_equity:.2f} → ${initial_equity:.2f} (desde {start_date})"
+                    )
+                else:
+                    session.add(PerformanceBaseline(
+                        period_key='all_time',
+                        start_ts=start_ts,
+                        start_equity=initial_equity
+                    ))
+                    logger.info(
+                        f"[TELEMETRY] 📊 Baseline ALL_TIME CRIADO: "
+                        f"${initial_equity:.2f} (desde {start_date})"
+                    )
+                
+                session.commit()
+                return True
+                
+        except Exception as e:
+            logger.error(f"[TELEMETRY] Erro ao setar initial equity: {e}")
+            return False
+    
     # ============================================================
     # EQUITY SNAPSHOTS
     # ============================================================
