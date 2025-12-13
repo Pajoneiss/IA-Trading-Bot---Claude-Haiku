@@ -815,6 +815,46 @@ def create_api_server(bot=None) -> Optional["FastAPI"]:
             logger.error(f"[DASHBOARD API] Erro ao buscar performance: {e}")
             raise HTTPException(status_code=500, detail=str(e))
     
+    @app.post("/api/set-initial-equity")
+    async def set_initial_equity(
+        request: Request,
+        x_api_key: str = Header(None)
+    ):
+        """
+        Define o equity inicial para cálculo de PnL ALL TIME.
+        
+        Útil quando o bot começou depois da conta já existir.
+        
+        Body: { "initial_equity": 10.0, "start_date": "2024-11-01" }
+        """
+        verify_api_key(x_api_key)
+        
+        try:
+            body = await request.json()
+            initial_equity = body.get('initial_equity')
+            start_date = body.get('start_date')  # ISO format: "2024-11-01"
+            
+            if not initial_equity:
+                return {"error": "initial_equity is required"}
+            
+            from bot.telemetry_store import get_telemetry_store
+            store = get_telemetry_store()
+            
+            result = store.set_initial_equity(
+                initial_equity=float(initial_equity),
+                start_date=start_date
+            )
+            
+            return {
+                "status": "ok" if result else "error",
+                "initial_equity": initial_equity,
+                "start_date": start_date
+            }
+            
+        except Exception as e:
+            logger.error(f"[DASHBOARD API] Erro ao setar initial equity: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
     logger.info("[DASHBOARD API] FastAPI server criado (PREMIUM EDITION + THOUGHTS + CHAT)")
     return app
 
