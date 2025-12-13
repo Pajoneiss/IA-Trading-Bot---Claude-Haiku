@@ -132,6 +132,20 @@ class TelegramNotifier:
             logger.error(f"Erro ao enviar mensagem Telegram: {e}")
             return False
     
+    def send(self, text: str, parse_mode: str = None) -> bool:
+        """
+        Alias para send_message (método padronizado).
+        
+        Sempre usa fallback seguro.
+        """
+        return self.send_message(text, parse_mode=parse_mode or "Markdown")
+    
+    def notify_message(self, text: str) -> bool:
+        """
+        Alias para send_message (compatibilidade).
+        """
+        return self.send_message(text)
+    
     # ==================== NOTIFICAÇÕES DE TRADING ====================
     
     def notify_position_opened(
