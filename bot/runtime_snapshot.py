@@ -210,15 +210,24 @@ def _get_trading_mode(bot) -> str:
 
 def _build_account_info(bot) -> Dict[str, Any]:
     """
-    Constrói info da conta com margem real.
+    Constrói info da conta com métricas estilo HyperDash.
     
     Busca dados diretamente do client quando possível.
     """
     result = {
         "equity": 0,
+        "account_value": 0,
         "free_margin": 0,
+        "withdrawable": 0,
         "used_margin": 0,
-        "available_balance": 0,
+        "position_value": 0,
+        "unrealized_pnl": 0,
+        "leverage": 0,
+        "long_exposure": 0,
+        "short_exposure": 0,
+        "roe_pct": 0,
+        "direction_bias": "NEUTRAL",
+        "margin_usage_pct": 0,
         "day_pnl_pct": 0,
         "week_pnl_pct": 0,
         "daily_drawdown_pct": 0
@@ -230,23 +239,65 @@ def _build_account_info(bot) -> Dict[str, Any]:
         if client:
             user_state = client.get_user_state()
             
-            # Campos que Hyperliquid pode retornar
-            equity = float(user_state.get('account_value', 0) or user_state.get('accountValue', 0) or 0)
+            # Campos da Hyperliquid
+            account_value = float(user_state.get('account_value', 0) or 0)
             withdrawable = float(user_state.get('withdrawable', 0) or 0)
-            margin_used = float(user_state.get('margin_used', 0) or user_state.get('marginUsed', 0) or 0)
+            margin_used = float(user_state.get('total_margin_used', 0) or 0)
             
-            result["equity"] = round(equity, 2)
-            result["available_balance"] = round(withdrawable, 2)
+            result["equity"] = round(account_value, 2)
+            result["account_value"] = round(account_value, 2)
+            result["withdrawable"] = round(withdrawable, 2)
+            result["free_margin"] = round(withdrawable, 2)
             result["used_margin"] = round(margin_used, 2)
             
-            # free_margin = equity - margin_used (estimativa)
-            # Se withdrawable disponível, usa ele
-            if withdrawable > 0:
-                result["free_margin"] = round(withdrawable, 2)
-            elif equity > 0 and margin_used >= 0:
-                result["free_margin"] = round(max(0, equity - margin_used), 2)
+            # Margin usage %
+            if account_value > 0:
+                result["margin_usage_pct"] = round((margin_used / account_value) * 100, 2)
+            
+            # Calcula exposições e posições
+            positions = user_state.get('assetPositions', [])
+            total_position_value = 0
+            total_unrealized = 0
+            long_value = 0
+            short_value = 0
+            
+            for pos_data in positions:
+                pos = pos_data.get('position', {})
+                size = float(pos.get('szi', 0))
+                entry_px = float(pos.get('entryPx', 0))
+                unrealized = float(pos.get('unrealizedPnl', 0))
+                
+                if size != 0:
+                    pos_value = abs(size * entry_px)
+                    total_position_value += pos_value
+                    total_unrealized += unrealized
+                    
+                    if size > 0:  # Long
+                        long_value += pos_value
+                    else:  # Short
+                        short_value += pos_value
+            
+            result["position_value"] = round(total_position_value, 2)
+            result["unrealized_pnl"] = round(total_unrealized, 2)
+            
+            # Leverage = Position Value / Equity
+            if account_value > 0:
+                result["leverage"] = round(total_position_value / account_value, 2)
+                result["roe_pct"] = round((total_unrealized / account_value) * 100, 2)
+            
+            # Long/Short Exposure %
+            if total_position_value > 0:
+                result["long_exposure"] = round((long_value / total_position_value) * 100, 1)
+                result["short_exposure"] = round((short_value / total_position_value) * 100, 1)
+            
+            # Direction Bias
+            if long_value > short_value * 1.5:
+                result["direction_bias"] = "LONG"
+            elif short_value > long_value * 1.5:
+                result["direction_bias"] = "SHORT"
             else:
-                result["free_margin"] = round(equity * 0.8, 2)  # Estimativa 80%
+                result["direction_bias"] = "NEUTRAL"
+                
     except Exception as e:
         logger.debug(f"[SNAPSHOT] Erro ao buscar user_state: {e}")
     
@@ -255,7 +306,8 @@ def _build_account_info(bot) -> Dict[str, Any]:
     if risk_manager:
         if result["equity"] == 0:
             result["equity"] = round(getattr(risk_manager, 'current_equity', 0), 2)
-        result["day_pnl_pct"] = round(getattr(risk_manager, 'daily_drawdown_pct', 0), 2)  # Note: daily_drawdown_pct é o PnL do dia
+            result["account_value"] = result["equity"]
+        result["day_pnl_pct"] = round(getattr(risk_manager, 'daily_drawdown_pct', 0), 2)
         result["daily_drawdown_pct"] = round(abs(min(0, getattr(risk_manager, 'daily_drawdown_pct', 0))), 2)
     
     return result
