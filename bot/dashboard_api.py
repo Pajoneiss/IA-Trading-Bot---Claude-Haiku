@@ -449,7 +449,217 @@ def create_api_server(bot=None) -> Optional["FastAPI"]:
             logger.error(f"[DASHBOARD API] Erro ao buscar health: {e}")
             raise HTTPException(status_code=500, detail=str(e))
     
-    logger.info("[DASHBOARD API] FastAPI server criado")
+    # ========== ENDPOINTS PREMIUM (PNL CAMPEÃO) ==========
+    
+    @app.get("/api/pnl/summary")
+    async def get_pnl_summary(x_api_key: str = Header(None)):
+        """
+        Retorna resumo de PnL para todos os períodos.
+        
+        Returns:
+        - pnl_all_time_pct, pnl_all_time_usd
+        - pnl_day_pct, pnl_day_usd
+        - pnl_week_pct, pnl_week_usd
+        - pnl_month_pct, pnl_month_usd
+        - max_drawdown_pct
+        - winrate, profit_factor
+        """
+        verify_api_key(x_api_key)
+        
+        try:
+            from bot.telemetry_store import get_telemetry_store
+            store = get_telemetry_store()
+            
+            # Busca equity atual
+            bot = get_bot_instance()
+            current_equity = None
+            if bot:
+                risk_manager = getattr(bot, 'risk_manager', None)
+                if risk_manager:
+                    current_equity = getattr(risk_manager, 'current_equity', None)
+            
+            # PnL Summary
+            pnl = store.get_pnl_summary(current_equity)
+            
+            # Métricas de performance (all time)
+            metrics = store.get_performance_metrics(range_hours=-1)
+            
+            return {
+                **pnl,
+                "winrate": metrics.get('winrate', 0),
+                "profit_factor": metrics.get('profit_factor', 0),
+                "max_drawdown_pct": metrics.get('max_drawdown_pct', 0),
+                "total_trades": metrics.get('trades_count', 0),
+                "trades_today": metrics.get('trades_today', 0),
+                "trades_week": metrics.get('trades_week', 0),
+                "trades_month": metrics.get('trades_month', 0)
+            }
+            
+        except ImportError:
+            return {"error": "Telemetry not available"}
+        except Exception as e:
+            logger.error(f"[DASHBOARD API] Erro ao buscar PnL summary: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.get("/api/pnl/series")
+    async def get_pnl_series(
+        x_api_key: str = Header(None),
+        range: str = "7d"
+    ):
+        """
+        Retorna série de equity para gráfico ALL TIME.
+        
+        Query params:
+            range: 1d, 7d, 30d, all
+        """
+        verify_api_key(x_api_key)
+        
+        try:
+            from bot.telemetry_store import get_telemetry_store
+            store = get_telemetry_store()
+            
+            range_map = {
+                "1d": 24,
+                "7d": 168,
+                "30d": 720,
+                "all": -1
+            }
+            range_hours = range_map.get(range, 168)
+            
+            series = store.get_equity_series(range_hours=range_hours)
+            
+            return {
+                "range": range,
+                "points": len(series),
+                "data": series
+            }
+            
+        except ImportError:
+            return {"error": "Telemetry not available", "data": []}
+        except Exception as e:
+            logger.error(f"[DASHBOARD API] Erro ao buscar PnL series: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.get("/api/fills")
+    async def get_fills(
+        x_api_key: str = Header(None),
+        range: str = "7d",
+        symbol: str = None,
+        side: str = None,
+        result: str = None,
+        limit: int = 200
+    ):
+        """
+        Retorna histórico de fills/trades.
+        
+        Query params:
+            range: 7d, 30d, all
+            symbol: filtro por símbolo
+            side: filtro por lado (buy/sell ou long/short)
+            result: win, loss, all
+            limit: máximo de registros
+        """
+        verify_api_key(x_api_key)
+        
+        try:
+            from bot.telemetry_store import get_telemetry_store
+            store = get_telemetry_store()
+            
+            range_map = {"7d": 168, "30d": 720, "all": -1}
+            range_hours = range_map.get(range, 168)
+            
+            only_profitable = None
+            if result == "win":
+                only_profitable = True
+            elif result == "loss":
+                only_profitable = False
+            
+            fills = store.get_fills(
+                range_hours=range_hours,
+                symbol=symbol,
+                side=side,
+                only_profitable=only_profitable,
+                limit=limit
+            )
+            
+            return {
+                "range": range,
+                "filters": {"symbol": symbol, "side": side, "result": result},
+                "count": len(fills),
+                "fills": fills
+            }
+            
+        except ImportError:
+            return {"error": "Telemetry not available", "fills": []}
+        except Exception as e:
+            logger.error(f"[DASHBOARD API] Erro ao buscar fills: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.get("/api/metrics")
+    async def get_full_metrics(
+        x_api_key: str = Header(None),
+        range: str = "all"
+    ):
+        """
+        Retorna métricas completas de performance.
+        
+        Returns:
+        - winrate, profit_factor, avg_win, avg_loss
+        - expectancy, max_drawdown
+        - trades_count, trades_today, trades_week, trades_month
+        - total_profit, total_loss, total_pnl, total_fees
+        """
+        verify_api_key(x_api_key)
+        
+        try:
+            from bot.telemetry_store import get_telemetry_store
+            store = get_telemetry_store()
+            
+            range_map = {"24h": 24, "7d": 168, "30d": 720, "all": -1}
+            range_hours = range_map.get(range, -1)
+            
+            metrics = store.get_performance_metrics(range_hours=range_hours)
+            
+            return {
+                "range": range,
+                "metrics": metrics
+            }
+            
+        except ImportError:
+            return {"error": "Telemetry not available", "metrics": {}}
+        except Exception as e:
+            logger.error(f"[DASHBOARD API] Erro ao buscar métricas: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.post("/api/backfill")
+    async def trigger_backfill(x_api_key: str = Header(None)):
+        """
+        Dispara backfill de fills da exchange.
+        
+        Requer autenticação admin.
+        """
+        verify_api_key(x_api_key)
+        
+        try:
+            from bot.telemetry_store import get_telemetry_store
+            store = get_telemetry_store()
+            
+            bot = get_bot_instance()
+            if not bot or not hasattr(bot, 'client'):
+                return {"error": "Bot not connected", "fills_imported": 0}
+            
+            count = store.backfill_from_exchange(bot.client, days=30)
+            
+            return {
+                "status": "ok",
+                "fills_imported": count
+            }
+            
+        except Exception as e:
+            logger.error(f"[DASHBOARD API] Erro no backfill: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    logger.info("[DASHBOARD API] FastAPI server criado (PREMIUM EDITION)")
     return app
 
 
