@@ -361,6 +361,14 @@ class TelegramInteractivePRO:
             except Exception as e:
                 logger.error(f"[TELEGRAM] Erro no comando /state: {e}")
         
+        @self.bot.message_handler(commands=['snapshot', 'runtime'])
+        def handle_snapshot(message):
+            """Comando /snapshot - Mostra runtime snapshot completo do bot"""
+            try:
+                self._send_runtime_snapshot(message.chat.id)
+            except Exception as e:
+                logger.error(f"[TELEGRAM] Erro no comando /snapshot: {e}")
+        
         # Callback handler (para confirmações)
         @self.bot.callback_query_handler(func=lambda call: True)
         def callback_query(call):
@@ -2391,3 +2399,19 @@ class TelegramInteractivePRO:
         except Exception as e:
             logger.error(f"[TELEGRAM] Erro ao enviar state: {e}")
             self.bot.send_message(chat_id, f"❌ Erro: {str(e)}", parse_mode=None)
+    
+    def _send_runtime_snapshot(self, chat_id: int):
+        """Envia runtime snapshot formatado para Telegram"""
+        try:
+            from bot.runtime_snapshot import build_runtime_snapshot, format_snapshot_for_telegram
+            
+            snapshot = build_runtime_snapshot(self.main_bot)
+            msg = format_snapshot_for_telegram(snapshot)
+            
+            self._safe_send_message(chat_id, msg, parse_mode='Markdown')
+            
+        except ImportError:
+            self._safe_send_message(chat_id, "❌ Módulo runtime_snapshot não disponível", parse_mode=None)
+        except Exception as e:
+            logger.error(f"[TELEGRAM] Erro ao enviar snapshot: {e}")
+            self._safe_send_message(chat_id, f"❌ Erro: {str(e)}", parse_mode=None)
