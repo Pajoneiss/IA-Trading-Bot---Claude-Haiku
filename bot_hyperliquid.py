@@ -657,6 +657,23 @@ class HyperliquidBot:
         # Inicia listener do Telegram (comandos)
         self.telegram_interactive.start()
         
+        # ========== TELEMETRIA ==========
+        # Inicializa store de telemetria (se DATABASE_URL configurado)
+        self.telemetry_store = None
+        self.last_snapshot_time = 0
+        self.snapshot_interval = int(os.getenv("SNAPSHOT_WRITE_INTERVAL_SECONDS", "30"))
+        
+        try:
+            from bot.telemetry_store import init_telemetry
+            self.telemetry_store = init_telemetry()
+            if self.telemetry_store.enabled:
+                self.logger.info(f"📊 [TELEMETRY] Habilitada - snapshot a cada {self.snapshot_interval}s")
+        except ImportError:
+            self.logger.warning("📊 [TELEMETRY] Módulo não disponível")
+        except Exception as e:
+            self.logger.warning(f"📊 [TELEMETRY] Erro ao inicializar: {e}")
+        # =================================
+        
         iteration = 0
         last_summary_time = 0
         summary_interval = 1800  # Envia resumo a cada 30 minutos
@@ -671,6 +688,10 @@ class HyperliquidBot:
                 try:
                     self._run_iteration()
                     
+                    # ========== GRAVA SNAPSHOT ==========
+                    self._write_telemetry_snapshot()
+                    # ====================================
+                    
                     # Envia resumo periódico via Telegram
                     if time.time() - last_summary_time > summary_interval:
                         self._send_telegram_summary()
@@ -679,6 +700,9 @@ class HyperliquidBot:
                 except Exception as e:
                     self.logger.error(f"❌ Erro na iteração: {e}", exc_info=True)
                     self.logger.warning("Continuando para próxima iteração...")
+                    
+                    # Grava erro na telemetria
+                    self._write_telemetry_error("ITERATION", None, str(e))
                 
                 self.logger.info(f"💤 Aguardando {self.loop_sleep}s até próxima iteração...")
                 time.sleep(self.loop_sleep)
@@ -689,6 +713,47 @@ class HyperliquidBot:
         except Exception as e:
             self.logger.error(f"❌ Erro fatal: {e}", exc_info=True)
             self._shutdown()
+    
+    def _write_telemetry_snapshot(self):
+        """Grava snapshot na telemetria (se habilitada e intervalo atingido)"""
+        if not self.telemetry_store or not self.telemetry_store.enabled:
+            return
+        
+        now = time.time()
+        if now - self.last_snapshot_time < self.snapshot_interval:
+            return
+        
+        try:
+            from bot.runtime_snapshot import build_runtime_snapshot
+            snapshot = build_runtime_snapshot(self)
+            self.telemetry_store.store_snapshot(snapshot)
+            self.last_snapshot_time = now
+        except Exception as e:
+            self.logger.debug(f"[TELEMETRY] Erro ao gravar snapshot: {e}")
+    
+    def _write_telemetry_trade(self, trade_event: Dict[str, Any]):
+        """Grava evento de trade na telemetria"""
+        if not self.telemetry_store or not self.telemetry_store.enabled:
+            return
+        
+        try:
+            self.telemetry_store.store_trade_event(trade_event)
+        except Exception as e:
+            self.logger.debug(f"[TELEMETRY] Erro ao gravar trade: {e}")
+    
+    def _write_telemetry_error(self, scope: str, symbol: str, message: str):
+        """Grava erro na telemetria"""
+        if not self.telemetry_store or not self.telemetry_store.enabled:
+            return
+        
+        try:
+            self.telemetry_store.store_error({
+                "scope": scope,
+                "symbol": symbol,
+                "message": message
+            })
+        except Exception as e:
+            self.logger.debug(f"[TELEMETRY] Erro ao gravar error: {e}")
     
     def _send_telegram_summary(self):
         """Envia resumo periódico via Telegram"""
@@ -2335,6 +2400,8 @@ class HyperliquidBot:
         """
         Fecha parcialmente a posição em `symbol` usando `percent`% do tamanho atual.
         
+        🔴 REGRA DE OURO: NUNCA pode virar close total automaticamente.
+        
         Args:
             symbol: Símbolo da posição
             percent: Percentual a fechar (0-100). Ex: 50.0 = 50%
@@ -2347,44 +2414,116 @@ class HyperliquidBot:
             return
         
         pos = self.position_manager.get_position(symbol)
+        position_size = abs(pos.size)
         
         # Normaliza percent para 0-1
         if percent > 1:
             percent = percent / 100
         
-        # Calcula tamanho da redução
-        reduce_size = pos.size * percent
+        # ===== GUARDRAILS =====
         
-        # Arredonda size
+        # Busca constraints do ativo
         sz_decimals = self.client.sz_decimals_cache.get(symbol, 4)
-        reduce_size = round(reduce_size, sz_decimals)
+        min_size = 10 ** (-sz_decimals)  # Ex: 0.0001 para 4 decimais
+        min_notional = self.risk_manager.min_notional if hasattr(self.risk_manager, 'min_notional') else 0.5
         
-        if reduce_size <= 0:
-            self.logger.warning(f"[PARTIAL_CLOSE] {symbol} reduce_size <= 0")
-            return
-        
-        self.logger.info(
-            f"✂️ [PARTIAL_CLOSE] {symbol} | "
-            f"Fechando {percent*100:.1f}% ({reduce_size}) | "
-            f"Motivo: {reason}"
-        )
-        
-        # Busca preço atual
+        # Busca preço atual para calcular notional
         try:
             all_prices = self.client.get_all_mids()
-            current_price = float(all_prices.get(symbol, 0))
+            current_price = float(all_prices.get(symbol, pos.entry_price))
         except:
-            current_price = pos.entry_price  # Fallback
+            current_price = pos.entry_price
+        
+        # Calcula tamanho da redução
+        raw_reduce_size = position_size * percent
+        
+        # SEMPRE arredondar DOWN (floor) para segurança
+        import math
+        factor = 10 ** sz_decimals
+        reduce_size = math.floor(raw_reduce_size * factor) / factor
+        
+        # Calcula notional
+        notional = reduce_size * current_price
+        
+        # ===== VALIDAÇÕES =====
+        
+        # 1. Size mínimo
+        if reduce_size < min_size:
+            self.logger.warning(
+                f"[PARTIAL_CLOSE] ⏭️ {symbol} SKIP: reduce_size={reduce_size} < min_size={min_size}"
+            )
+            self.telegram.notify_message(
+                f"⏭️ Partial close {symbol} skipped: abaixo do min_size ({reduce_size} < {min_size})"
+            )
+            return
+        
+        # 2. Notional mínimo
+        if notional < min_notional:
+            self.logger.warning(
+                f"[PARTIAL_CLOSE] ⏭️ {symbol} SKIP: notional=${notional:.2f} < min_notional=${min_notional}"
+            )
+            self.telegram.notify_message(
+                f"⏭️ Partial close {symbol} skipped: abaixo do min_notional (${notional:.2f} < ${min_notional})"
+            )
+            return
+        
+        # 3. 🔴 CRÍTICO: NUNCA permitir partial close >= 95% da posição
+        #    Isso evita que "50%" vire "100%" por arredondamento
+        if reduce_size >= position_size * 0.95:
+            self.logger.warning(
+                f"[PARTIAL_CLOSE] ⛔ {symbol} BLOCKED: reduce_size={reduce_size} >= 95% da posição={position_size}"
+            )
+            self.telegram.notify_message(
+                f"⛔ Partial close {symbol} bloqueado: não é permitido fechar >= 95% via partial. Use close total."
+            )
+            return
+        
+        # 4. Verifica se sobra algo significativo
+        remaining_size = position_size - reduce_size
+        remaining_notional = remaining_size * current_price
+        
+        if remaining_size < min_size or remaining_notional < min_notional:
+            self.logger.warning(
+                f"[PARTIAL_CLOSE] ⛔ {symbol} BLOCKED: posição restante muito pequena "
+                f"(size={remaining_size}, notional=${remaining_notional:.2f})"
+            )
+            self.telegram.notify_message(
+                f"⛔ Partial close {symbol} bloqueado: posição restante ficaria muito pequena"
+            )
+            return
+        
+        # ===== LOG ESTRUTURADO =====
+        self.logger.info(
+            f"✂️ [PARTIAL_CLOSE] {symbol} | "
+            f"requested_pct={percent*100:.1f}% | "
+            f"position_size={position_size} | "
+            f"computed_partial={raw_reduce_size:.6f} | "
+            f"rounded_partial={reduce_size} | "
+            f"min_size={min_size} | min_notional=${min_notional} | "
+            f"notional=${notional:.2f} | "
+            f"remaining={remaining_size} | "
+            f"decision=EXECUTE | reason={reason}"
+        )
+        
+        # ===== EXECUÇÃO =====
         
         if not self.live_trading:
             # Simulação (PAPER)
-            new_size = pos.size - reduce_size
-            if new_size < 0.0001:
-                self.position_manager.remove_position(symbol)
-                self.logger.info(f"[PARTIAL_CLOSE] {symbol} posição zerada (PAPER)")
-            else:
-                self.position_manager.update_position(symbol, new_size, pos.entry_price)
-                self.logger.info(f"[PARTIAL_CLOSE] {symbol} novo size: {new_size} (PAPER)")
+            new_size = position_size - reduce_size
+            self.position_manager.update_position(symbol, new_size, pos.entry_price)
+            self.logger.info(f"[PARTIAL_CLOSE] ✅ {symbol} novo size: {new_size} (PAPER)")
+            
+            # Registra trade na telemetria
+            self._write_telemetry_trade({
+                "symbol": symbol,
+                "side": pos.side,
+                "action_type": "DECREASE",
+                "size": reduce_size,
+                "price": current_price,
+                "pnl_pct": percent * 100,
+                "ai_reason": reason,
+                "mode_execution": "PAPER"
+            })
             return
         
         # LIVE: Executa na exchange (Reduce Only)
@@ -2402,18 +2541,28 @@ class HyperliquidBot:
             )
             
             if result.get('status') == 'ok':
-                new_size = pos.size - reduce_size
-                if new_size < 0.0001:
-                    self.position_manager.remove_position(symbol)
-                    self.logger.info(f"[PARTIAL_CLOSE] {symbol} posição fechada completamente")
-                else:
-                    self.position_manager.update_position(symbol, new_size, pos.entry_price)
-                    self.logger.info(f"[PARTIAL_CLOSE] {symbol} novo size: {new_size}")
+                new_size = position_size - reduce_size
+                self.position_manager.update_position(symbol, new_size, pos.entry_price)
+                self.logger.info(f"[PARTIAL_CLOSE] ✅ {symbol} novo size: {new_size}")
+                
+                # Registra trade
+                self._write_telemetry_trade({
+                    "symbol": symbol,
+                    "side": pos.side,
+                    "action_type": "DECREASE",
+                    "size": reduce_size,
+                    "price": current_price,
+                    "ai_reason": reason,
+                    "mode_execution": "LIVE",
+                    "raw_exchange_response": result
+                })
             else:
-                self.logger.error(f"[PARTIAL_CLOSE] Erro: {result}")
+                self.logger.error(f"[PARTIAL_CLOSE] ❌ Erro: {result}")
+                self._write_telemetry_error("PARTIAL_CLOSE", symbol, f"Exchange error: {result}")
                 
         except Exception as e:
-            self.logger.error(f"[PARTIAL_CLOSE] Erro ao executar: {e}")
+            self.logger.error(f"[PARTIAL_CLOSE] ❌ Erro ao executar: {e}")
+            self._write_telemetry_error("PARTIAL_CLOSE", symbol, str(e))
     
     def _execute_open(self, decision: Dict[str, Any], prices: Dict[str, float]) -> bool:
         """Executa abertura de posição - USA VALORES DA IA
