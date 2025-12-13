@@ -70,7 +70,7 @@ class TelegramNotifier:
     
     def send_message(self, text: str, parse_mode: str = "Markdown") -> bool:
         """
-        Envia mensagem para o Telegram.
+        Envia mensagem para o Telegram com fallback automático.
         
         Args:
             text: Texto da mensagem (suporta Markdown)
@@ -103,11 +103,32 @@ class TelegramNotifier:
             if response.status_code == 200:
                 logger.debug("Mensagem Telegram enviada com sucesso")
                 return True
-            else:
-                logger.warning(f"Falha ao enviar Telegram: {response.status_code} - {response.text}")
-                return False
+            
+            # ===== FALLBACK: Se erro de parse, tenta sem formatação =====
+            error_text = response.text.lower()
+            if "can't parse entities" in error_text or "bad request" in error_text:
+                logger.warning(f"[TELEGRAM] Fallback sem parse_mode: {response.text}")
+                
+                # Remove caracteres problemáticos
+                clean_text = text.replace('*', '').replace('_', '').replace('`', '')
+                clean_text = clean_text.replace('[', '').replace(']', '')
+                
+                payload["text"] = clean_text
+                payload["parse_mode"] = None
+                
+                retry_response = requests.post(url, json=payload, timeout=10)
+                if retry_response.status_code == 200:
+                    logger.debug("Mensagem Telegram enviada (fallback)")
+                    return True
+                else:
+                    logger.warning(f"[TELEGRAM] Falha mesmo no fallback: {retry_response.text}")
+                    return False
+            
+            logger.warning(f"Falha ao enviar Telegram: {response.status_code} - {response.text}")
+            return False
                 
         except Exception as e:
+            # NUNCA derrubar o bot por erro de Telegram
             logger.error(f"Erro ao enviar mensagem Telegram: {e}")
             return False
     
