@@ -3159,8 +3159,21 @@ def main():
     else:
         logger.info("✅ Modo DRY RUN ativado - apenas simulação (LIVE_TRADING=false)")
     
-    # Cria e executa bot
+    # Cria bot
     bot = HyperliquidBot(config)
+    
+    # Inicia Dashboard API (se DASHBOARD_API_KEY configurada ou em modo dev)
+    try:
+        from bot.dashboard_api import integrate_with_bot
+        api_port = int(os.getenv("API_PORT", os.getenv("PORT", 8080)))
+        integrate_with_bot(bot, port=api_port)
+        logger.info(f"✅ Dashboard API disponível na porta {api_port}")
+    except ImportError as e:
+        logger.warning(f"⚠️ Dashboard API não disponível: {e}")
+    except Exception as e:
+        logger.error(f"❌ Erro ao iniciar Dashboard API: {e}")
+    
+    # Executa bot
     bot.run()
 
 
