@@ -322,10 +322,59 @@ Analise e decida as ações a tomar. Responda em JSON conforme o formato especif
             self.logger.info(f"[GLOBAL_IA] ✅ Análise: {analysis[:100]}...")
             self.logger.info(f"[GLOBAL_IA] ✅ {len(actions)} ações decididas")
             
+            # ===== REGISTRA NO THOUGHT FEED =====
+            try:
+                from bot.thought_feed import get_thought_feed
+                feed = get_thought_feed()
+                
+                # Extrai símbolos das ações
+                symbols = list(set([a.symbol for a in actions if a.symbol]))
+                
+                # Extrai ações resumidas
+                action_summaries = []
+                for a in actions:
+                    if a.intent != 'hold':
+                        action_summaries.append(f"{a.intent.upper()} {a.symbol}")
+                
+                # Determina tipo do thought
+                thought_type = 'decision' if actions else 'analysis'
+                
+                # Summary curto
+                summary = analysis[:300] if analysis else "Análise concluída"
+                if action_summaries:
+                    summary = f"{summary[:200]}... → Ações: {', '.join(action_summaries[:5])}"
+                
+                feed.add_thought(
+                    type=thought_type,
+                    summary=summary,
+                    symbols=symbols[:10],  # Max 10 símbolos
+                    actions=action_summaries[:5],  # Max 5 ações
+                    confidence=0.85 if actions else 0.5
+                )
+                
+                self.logger.debug(f"[GLOBAL_IA] 📝 Thought registrado: {thought_type}")
+                
+            except Exception as e:
+                self.logger.debug(f"[GLOBAL_IA] Erro ao registrar thought: {e}")
+            
             return analysis, actions
             
         except Exception as e:
             self.logger.error(f"[GLOBAL_IA] ❌ Erro ao chamar Claude: {e}")
+            
+            # Registra erro no ThoughtFeed
+            try:
+                from bot.thought_feed import get_thought_feed
+                feed = get_thought_feed()
+                feed.add_thought(
+                    type='error',
+                    summary=f"Erro na chamada da IA: {str(e)[:200]}",
+                    symbols=[],
+                    actions=[]
+                )
+            except:
+                pass
+            
             return f"Erro: {str(e)}", []
     
     def _parse_global_response(self, response_text: str) -> Tuple[str, List[GlobalAction]]:
