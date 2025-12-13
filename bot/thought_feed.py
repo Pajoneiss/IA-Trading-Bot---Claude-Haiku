@@ -34,10 +34,23 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 from enum import Enum
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 import threading
 
 logger = logging.getLogger(__name__)
+
+# SQLAlchemy imports
+try:
+    from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text, JSON
+    from sqlalchemy.ext.declarative import declarative_base
+    from sqlalchemy.orm import sessionmaker
+    from contextlib import contextmanager
+    SQLALCHEMY_AVAILABLE = True
+except ImportError:
+    SQLALCHEMY_AVAILABLE = False
+    logger.warning("[THOUGHT_FEED] SQLAlchemy não disponível, usando fallback em memória")
+
+Base = declarative_base() if SQLALCHEMY_AVAILABLE else None
 
 
 class ThoughtType(Enum):
@@ -50,6 +63,23 @@ class ThoughtType(Enum):
     ERROR = "error"            # Erro relevante (não stack trace!)
     INSIGHT = "insight"        # Insight/observação
     STRATEGY = "strategy"      # Mudança de estratégia
+
+
+# SQLAlchemy Model
+if SQLALCHEMY_AVAILABLE:
+    class ThoughtRecord(Base):
+        """Tabela de thoughts no PostgreSQL"""
+        __tablename__ = 'ai_thoughts'
+        
+        id = Column(Integer, primary_key=True, autoincrement=True)
+        thought_id = Column(String(100), unique=True, index=True)
+        timestamp = Column(DateTime(timezone=True), index=True)
+        type = Column(String(50), index=True)
+        summary = Column(Text)
+        symbols = Column(JSON, default=[])
+        actions = Column(JSON, default=[])
+        details = Column(JSON, default={})
+        confidence = Column(Float, nullable=True)
 
 
 @dataclass
@@ -81,29 +111,94 @@ class ThoughtFeed:
     """
     Gerenciador de pensamentos da IA.
     
-    Armazena em memória + arquivo para persistência básica.
+    Armazena em PostgreSQL (se disponível) ou memória + arquivo como fallback.
     """
     
-    def __init__(self, max_thoughts: int = 500, persist_file: str = None):
+    def __init__(self, max_thoughts: int = 500):
         self.max_thoughts = max_thoughts
         self.thoughts: List[Thought] = []
         self._lock = threading.Lock()
         self._counter = 0
+        self._db_enabled = False
+        self._engine = None
+        self._Session = None
         
-        # Arquivo de persistência
-        self.persist_file = persist_file or os.path.join(
-            os.path.dirname(__file__), '..', 'data', 'thought_feed.jsonl'
-        )
+        # Tenta conectar ao PostgreSQL
+        self._init_database()
         
-        # Carrega histórico se existir
-        self._load_history()
+        # Se não tiver DB, carrega do arquivo
+        if not self._db_enabled:
+            self.persist_file = os.path.join(
+                os.path.dirname(__file__), '..', 'data', 'thought_feed.jsonl'
+            )
+            self._load_history_from_file()
     
-    def _load_history(self):
-        """Carrega histórico do arquivo"""
+    def _init_database(self):
+        """Inicializa conexão com PostgreSQL"""
+        if not SQLALCHEMY_AVAILABLE:
+            return
+        
+        database_url = os.getenv('DATABASE_URL')
+        if not database_url:
+            logger.info("[THOUGHT_FEED] DATABASE_URL não configurada, usando fallback")
+            return
+        
+        try:
+            # Ajusta URL para SQLAlchemy se necessário
+            if database_url.startswith('postgres://'):
+                database_url = database_url.replace('postgres://', 'postgresql://', 1)
+            
+            self._engine = create_engine(database_url, pool_pre_ping=True, pool_size=3)
+            
+            # Cria tabela se não existir
+            Base.metadata.create_all(self._engine)
+            
+            self._Session = sessionmaker(bind=self._engine)
+            self._db_enabled = True
+            
+            # Carrega último counter
+            self._load_counter_from_db()
+            
+            logger.info("[THOUGHT_FEED] ✅ Conectado ao PostgreSQL")
+            
+        except Exception as e:
+            logger.error(f"[THOUGHT_FEED] Erro ao conectar PostgreSQL: {e}")
+            self._db_enabled = False
+    
+    def _load_counter_from_db(self):
+        """Carrega último counter do banco"""
+        try:
+            session = self._Session()
+            last = session.query(ThoughtRecord).order_by(ThoughtRecord.id.desc()).first()
+            if last:
+                self._counter = last.id
+            session.close()
+        except:
+            pass
+    
+    @contextmanager
+    def _get_session(self):
+        """Context manager para sessão do banco"""
+        if not self._db_enabled:
+            yield None
+            return
+        
+        session = self._Session()
+        try:
+            yield session
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            raise e
+        finally:
+            session.close()
+    
+    def _load_history_from_file(self):
+        """Carrega histórico do arquivo (fallback)"""
         try:
             if os.path.exists(self.persist_file):
                 with open(self.persist_file, 'r') as f:
-                    lines = f.readlines()[-self.max_thoughts:]  # Últimos N
+                    lines = f.readlines()[-self.max_thoughts:]
                     for line in lines:
                         try:
                             data = json.loads(line.strip())
@@ -112,12 +207,12 @@ class ThoughtFeed:
                             self._counter = max(self._counter, int(data.get('id', '0').split('_')[-1] or 0))
                         except:
                             pass
-                logger.info(f"[THOUGHT_FEED] Carregados {len(self.thoughts)} pensamentos do histórico")
+                logger.info(f"[THOUGHT_FEED] Carregados {len(self.thoughts)} pensamentos do arquivo")
         except Exception as e:
             logger.debug(f"[THOUGHT_FEED] Erro ao carregar histórico: {e}")
     
-    def _persist_thought(self, thought: Thought):
-        """Persiste pensamento no arquivo"""
+    def _persist_to_file(self, thought: Thought):
+        """Persiste pensamento no arquivo (fallback)"""
         try:
             os.makedirs(os.path.dirname(self.persist_file), exist_ok=True)
             with open(self.persist_file, 'a') as f:
@@ -148,10 +243,11 @@ class ThoughtFeed:
         """
         with self._lock:
             self._counter += 1
+            now = datetime.now(timezone.utc)
             
             thought = Thought(
                 id=f"thought_{self._counter}",
-                timestamp=datetime.now(timezone.utc).isoformat(),
+                timestamp=now.isoformat(),
                 type=type.value if isinstance(type, ThoughtType) else type,
                 summary=summary[:500],  # Limita tamanho
                 symbols=symbols or [],
@@ -160,14 +256,31 @@ class ThoughtFeed:
                 confidence=confidence
             )
             
-            self.thoughts.append(thought)
-            
-            # Limita tamanho
-            if len(self.thoughts) > self.max_thoughts:
-                self.thoughts = self.thoughts[-self.max_thoughts:]
-            
-            # Persiste
-            self._persist_thought(thought)
+            # Persiste no PostgreSQL se disponível
+            if self._db_enabled:
+                try:
+                    with self._get_session() as session:
+                        if session:
+                            record = ThoughtRecord(
+                                thought_id=thought.id,
+                                timestamp=now,
+                                type=thought.type,
+                                summary=thought.summary,
+                                symbols=thought.symbols,
+                                actions=thought.actions,
+                                details=thought.details,
+                                confidence=thought.confidence
+                            )
+                            session.add(record)
+                            logger.info(f"[THOUGHT_FEED] 📝 Thought salvo no PostgreSQL: {thought.type}")
+                except Exception as e:
+                    logger.error(f"[THOUGHT_FEED] Erro ao salvar no DB: {e}")
+            else:
+                # Fallback: memória + arquivo
+                self.thoughts.append(thought)
+                if len(self.thoughts) > self.max_thoughts:
+                    self.thoughts = self.thoughts[-self.max_thoughts:]
+                self._persist_to_file(thought)
             
             logger.debug(f"[THOUGHT_FEED] +{thought.type}: {thought.summary[:50]}...")
             
@@ -190,8 +303,49 @@ class ThoughtFeed:
         Returns:
             Lista de pensamentos como dicts
         """
+        # Busca do PostgreSQL se disponível
+        if self._db_enabled:
+            try:
+                with self._get_session() as session:
+                    if session:
+                        query = session.query(ThoughtRecord).order_by(ThoughtRecord.timestamp.desc())
+                        
+                        if type_filter:
+                            query = query.filter(ThoughtRecord.type == type_filter)
+                        
+                        if since:
+                            since_dt = datetime.fromisoformat(since.replace('Z', '+00:00'))
+                            query = query.filter(ThoughtRecord.timestamp > since_dt)
+                        
+                        records = query.limit(limit).all()
+                        
+                        result = []
+                        for r in records:
+                            thought_dict = {
+                                'id': r.thought_id,
+                                'timestamp': r.timestamp.isoformat() if r.timestamp else None,
+                                'type': r.type,
+                                'summary': r.summary,
+                                'symbols': r.symbols or [],
+                                'actions': r.actions or [],
+                                'details': r.details or {},
+                                'confidence': r.confidence
+                            }
+                            
+                            # Filtro por símbolo (não tem índice, filtra em Python)
+                            if symbol_filter:
+                                if symbol_filter not in (thought_dict['symbols'] or []):
+                                    continue
+                            
+                            result.append(thought_dict)
+                        
+                        return result
+            except Exception as e:
+                logger.error(f"[THOUGHT_FEED] Erro ao buscar do DB: {e}")
+        
+        # Fallback: memória
         with self._lock:
-            result = list(reversed(self.thoughts))  # Mais recentes primeiro
+            result = list(reversed(self.thoughts))
             
             if type_filter:
                 result = [t for t in result if t.type == type_filter]
