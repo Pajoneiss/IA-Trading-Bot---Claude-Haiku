@@ -282,6 +282,173 @@ def create_api_server(bot=None) -> Optional["FastAPI"]:
             logger.error(f"[DASHBOARD API] Erro ao buscar ai-status: {e}")
             raise HTTPException(status_code=500, detail=str(e))
     
+    # ========== ENDPOINTS DE TELEMETRIA (SÉRIES E MÉTRICAS) ==========
+    
+    @app.get("/api/metrics/series")
+    async def get_metrics_series(
+        x_api_key: str = Header(None),
+        range: str = "24h"
+    ):
+        """
+        Retorna série temporal para gráficos.
+        
+        Query params:
+            range: 1h, 24h, 7d, 30d
+        """
+        verify_api_key(x_api_key)
+        
+        try:
+            from bot.telemetry_store import get_telemetry_store
+            store = get_telemetry_store()
+            
+            # Converte range para horas
+            range_map = {
+                "1h": 1,
+                "24h": 24,
+                "7d": 168,
+                "30d": 720
+            }
+            range_hours = range_map.get(range, 24)
+            
+            series = store.get_snapshots_series(range_hours=range_hours)
+            
+            return {
+                "range": range,
+                "range_hours": range_hours,
+                "points": len(series),
+                "data": series
+            }
+            
+        except ImportError:
+            return {"error": "Telemetry not available", "data": []}
+        except Exception as e:
+            logger.error(f"[DASHBOARD API] Erro ao buscar série: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.get("/api/trades")
+    async def get_trades_journal(
+        x_api_key: str = Header(None),
+        limit: int = 200,
+        symbol: str = None,
+        range: str = "24h"
+    ):
+        """
+        Retorna journal de trades.
+        
+        Query params:
+            limit: max registros (default 200)
+            symbol: filtro por símbolo
+            range: 1h, 24h, 7d, 30d
+        """
+        verify_api_key(x_api_key)
+        
+        try:
+            from bot.telemetry_store import get_telemetry_store
+            store = get_telemetry_store()
+            
+            range_map = {"1h": 1, "24h": 24, "7d": 168, "30d": 720}
+            range_hours = range_map.get(range, 24)
+            
+            trades = store.get_trades(
+                limit=limit,
+                symbol=symbol,
+                range_hours=range_hours
+            )
+            
+            return {
+                "range": range,
+                "symbol": symbol,
+                "count": len(trades),
+                "trades": trades
+            }
+            
+        except ImportError:
+            return {"error": "Telemetry not available", "trades": []}
+        except Exception as e:
+            logger.error(f"[DASHBOARD API] Erro ao buscar trades: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.get("/api/metrics/stats")
+    async def get_metrics_stats(
+        x_api_key: str = Header(None),
+        range: str = "24h"
+    ):
+        """
+        Retorna métricas agregadas (win rate, profit factor, etc).
+        
+        Query params:
+            range: 24h, 7d, 30d
+        """
+        verify_api_key(x_api_key)
+        
+        try:
+            from bot.telemetry_store import get_telemetry_store
+            store = get_telemetry_store()
+            
+            range_map = {"24h": 24, "7d": 168, "30d": 720}
+            range_hours = range_map.get(range, 24)
+            
+            metrics = store.get_metrics(range_hours=range_hours)
+            
+            return {
+                "range": range,
+                "range_hours": range_hours,
+                "metrics": metrics
+            }
+            
+        except ImportError:
+            return {"error": "Telemetry not available", "metrics": {}}
+        except Exception as e:
+            logger.error(f"[DASHBOARD API] Erro ao buscar métricas: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.get("/api/health/details")
+    async def get_health_details(x_api_key: str = Header(None)):
+        """
+        Retorna detalhes de saúde do sistema.
+        """
+        verify_api_key(x_api_key)
+        
+        bot = get_bot_instance()
+        
+        try:
+            # Verifica telemetria
+            telemetry_ok = False
+            try:
+                from bot.telemetry_store import get_telemetry_store
+                store = get_telemetry_store()
+                telemetry_ok = store.enabled
+            except:
+                pass
+            
+            # Última atualização de preços
+            last_price_update = None
+            if bot:
+                try:
+                    last_price_update = getattr(bot, 'last_price_update', None)
+                    if last_price_update:
+                        last_price_update = last_price_update.isoformat()
+                except:
+                    pass
+            
+            # Último erro
+            last_error = None
+            if bot:
+                last_error = getattr(bot, 'last_error', None)
+            
+            return {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "bot_connected": bot is not None,
+                "telemetry_enabled": telemetry_ok,
+                "last_price_update": last_price_update,
+                "last_error": last_error,
+                "global_ia_last_call": getattr(bot, 'last_global_ia_call', None).isoformat() if bot and getattr(bot, 'last_global_ia_call', None) else None
+            }
+            
+        except Exception as e:
+            logger.error(f"[DASHBOARD API] Erro ao buscar health: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
     logger.info("[DASHBOARD API] FastAPI server criado")
     return app
 
