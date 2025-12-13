@@ -2167,7 +2167,38 @@ class HyperliquidBot:
                     
             elif intent == 'decrease':
                 if self.position_manager.has_position(symbol):
-                    pct = action.partial_close_pct or 0.5  # 50% default
+                    position = self.position_manager.get_position(symbol)
+                    position_size = abs(position.size)
+                    
+                    # Busca preço atual
+                    current_price = prices.get(symbol, position.entry_price)
+                    position_notional = position_size * current_price
+                    
+                    # A IA pode retornar:
+                    # 1) partial_close_pct (0.0-1.0): percentual da posição
+                    # 2) size_usd: valor em USD para reduzir
+                    
+                    pct = action.partial_close_pct
+                    
+                    # Se partial_close_pct não foi especificado mas size_usd foi,
+                    # converte size_usd para percentual
+                    if pct == 0 and action.size_usd > 0:
+                        # size_usd é o valor em USD que a IA quer reduzir
+                        # Converte para percentual da posição
+                        pct = min(action.size_usd / position_notional, 0.99) if position_notional > 0 else 0.5
+                        self.logger.info(
+                            f"[GLOBAL_IA] DECREASE {symbol}: Convertendo size_usd=${action.size_usd:.2f} "
+                            f"→ {pct*100:.1f}% da posição (notional=${position_notional:.2f})"
+                        )
+                    
+                    # Fallback para 50% se nenhum foi especificado
+                    if pct == 0:
+                        pct = 0.5
+                        self.logger.info(f"[GLOBAL_IA] DECREASE {symbol}: Usando default 50%")
+                    
+                    # Valida limites (0.01 a 0.95)
+                    pct = max(0.01, min(pct, 0.95))
+                    
                     self._execute_partial_close(symbol, pct * 100, action.reason)
                     
             elif intent == 'adjust_sl':
@@ -2618,12 +2649,46 @@ class HyperliquidBot:
         
         # 3. 🔴 CRÍTICO: NUNCA permitir partial close >= 95% da posição
         #    Isso evita que "50%" vire "100%" por arredondamento
-        if reduce_size >= position_size * 0.95:
+        #    Configurável via ENV: MAX_PARTIAL_CLOSE_PCT (default 0.95)
+        import os
+        max_partial_pct = float(os.getenv('MAX_PARTIAL_CLOSE_PCT', '0.95'))
+        
+        if reduce_size >= position_size * max_partial_pct:
             self.logger.warning(
-                f"[PARTIAL_CLOSE] ⛔ {symbol} BLOCKED: reduce_size={reduce_size} >= 95% da posição={position_size}"
+                f"[PARTIAL_CLOSE] ⛔ {symbol} BLOCKED | "
+                f"REASON: MAX_REDUCE_PCT | "
+                f"reduce_size={reduce_size:.6f} coins | "
+                f"position_size={position_size:.6f} coins | "
+                f"reduce_pct={reduce_size/position_size*100:.1f}% >= {max_partial_pct*100:.0f}% | "
+                f"price=${current_price:.2f} | "
+                f"notional_reduce=${notional:.2f} | "
+                f"Use close total se quiser fechar >= {max_partial_pct*100:.0f}%"
             )
-            self.telegram.notify_message(
-                f"⛔ Partial close {symbol} bloqueado: não é permitido fechar >= 95% via partial. Use close total."
+            
+            # Registra no ThoughtFeed
+            try:
+                from bot.thought_feed import get_thought_feed
+                feed = get_thought_feed()
+                feed.add_thought(
+                    type='risk',
+                    summary=f"Partial close {symbol} bloqueado: {reduce_size/position_size*100:.1f}% >= {max_partial_pct*100:.0f}% máximo permitido",
+                    symbols=[symbol],
+                    details={
+                        'reason_code': 'MAX_REDUCE_PCT',
+                        'reduce_size': reduce_size,
+                        'position_size': position_size,
+                        'reduce_pct': reduce_size/position_size*100,
+                        'max_pct': max_partial_pct*100
+                    }
+                )
+            except:
+                pass
+            
+            self.telegram.send(
+                f"⛔ Partial close {symbol} bloqueado\n"
+                f"Motivo: MAX_REDUCE_PCT\n"
+                f"Redução: {reduce_size/position_size*100:.1f}% >= {max_partial_pct*100:.0f}% permitido\n"
+                f"Use close total se necessário."
             )
             return
         
