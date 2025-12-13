@@ -1,22 +1,24 @@
 """
-TELEMETRY STORE
-===============
+TELEMETRY STORE - DATA ENGINE PREMIUM
+=====================================
 
-Módulo de persistência para telemetria do bot.
-Armazena snapshots, trades, e erros no Postgres.
+Sistema de persistência completo para o bot de trading.
+Armazena histórico de equity, trades, métricas e baselines.
 
 Tabelas:
-- snapshots: Time-series do estado do bot
-- trades: Journal de todas as operações
+- equity_snapshots: Time-series de equity (gráfico all-time)
+- fills: Histórico de trades/fills da exchange
+- performance_baselines: Baselines para PnL dia/semana/mês/all-time
 - errors: Log de erros para observabilidade
 
 Uso:
-    from bot.telemetry_store import TelemetryStore
+    from bot.telemetry_store import get_telemetry_store
     
-    store = TelemetryStore()
-    store.store_snapshot(snapshot_dict)
-    store.store_trade_event(trade_event)
-    store.store_error(error_dict)
+    store = get_telemetry_store()
+    store.record_equity_snapshot(equity, unrealized, positions_count)
+    store.record_fill(fill_data)
+    store.get_pnl_summary()
+    store.get_equity_series(range_hours=168)
 
 Autor: Claude
 Data: 2024-12-13
@@ -26,8 +28,8 @@ import os
 import json
 import logging
 import hashlib
-from datetime import datetime, timezone
-from typing import Dict, Any, Optional, List
+from datetime import datetime, timezone, timedelta
+from typing import Dict, Any, Optional, List, Tuple
 from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
@@ -37,10 +39,12 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 try:
-    from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text, Boolean, JSON
+    from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text, Boolean, JSON, Index
+    from sqlalchemy import func, desc, asc
     from sqlalchemy.ext.declarative import declarative_base
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy.pool import QueuePool
+    from sqlalchemy.dialects.postgresql import insert
     
     SQLALCHEMY_AVAILABLE = True
 except ImportError:
@@ -55,90 +59,85 @@ Base = declarative_base() if SQLALCHEMY_AVAILABLE else None
 # ============================================================
 
 if SQLALCHEMY_AVAILABLE:
-    class SnapshotRecord(Base):
-        """Time-series de snapshots do bot"""
-        __tablename__ = 'snapshots'
+    
+    class EquitySnapshot(Base):
+        """Time-series de equity para gráfico all-time"""
+        __tablename__ = 'equity_snapshots'
         
         id = Column(Integer, primary_key=True, autoincrement=True)
         ts_utc = Column(DateTime(timezone=True), nullable=False, index=True)
         
-        # Execution
-        mode_execution = Column(String(50))  # PAPER/LIVE/SHADOW
-        ai_mode = Column(String(50))  # GLOBAL_IA/BALANCEADO/etc
-        is_paused = Column(Boolean, default=False)
+        equity_usd = Column(Float, nullable=False)
+        unrealized_usd = Column(Float, default=0)
+        realized_day_usd = Column(Float, default=0)
+        positions_count = Column(Integer, default=0)
         
-        # Account
-        equity = Column(Float)
-        free_margin = Column(Float)
-        day_pnl_pct = Column(Float)
-        week_pnl_pct = Column(Float)
-        daily_drawdown_pct = Column(Float)
-        
-        # Positions
-        open_positions_count = Column(Integer, default=0)
-        total_positions_pnl_usd = Column(Float, default=0)
-        
-        # AI Budget
-        claude_calls_today = Column(Integer, default=0)
-        claude_limit_per_day = Column(Integer, default=12)
-        openai_calls_today = Column(Integer, default=0)
-        openai_limit_per_day = Column(Integer, default=40)
-        
-        # GLOBAL_IA
-        global_ia_active = Column(Boolean, default=False)
-        global_ia_last_call_ts = Column(DateTime(timezone=True))
-        
-        # Market
-        symbols_monitored = Column(Integer, default=0)
-        
-        # Raw JSON (backup completo)
-        raw_json = Column(JSON)
-        
-        # Multi-tenant (futuro)
-        user_id = Column(String(100), default='default')
-        account_id = Column(String(100), default='default')
-
-
-    class TradeRecord(Base):
-        """Journal de trades"""
-        __tablename__ = 'trades'
-        
-        id = Column(Integer, primary_key=True, autoincrement=True)
-        ts_utc = Column(DateTime(timezone=True), nullable=False, index=True)
-        
-        # Trade info
-        symbol = Column(String(20), nullable=False, index=True)
-        side = Column(String(10))  # long/short
-        action_type = Column(String(20))  # OPEN/CLOSE/INCREASE/DECREASE/SL/TP/BREAKEVEN
-        
-        # Execution
-        size = Column(Float)
-        price = Column(Float)
-        leverage = Column(Integer)
-        
-        # PnL
-        pnl_usd = Column(Float)
-        pnl_pct = Column(Float)
-        fees_est_usd = Column(Float)
-        
-        # Context
-        mode_execution = Column(String(50))
-        strategy_tag = Column(String(50))
-        
-        # AI Decision
-        ai_reason = Column(Text)
-        ai_confidence = Column(Float)
-        
-        # Raw data
-        state_hash = Column(String(64))
-        raw_ai_decision_json = Column(JSON)
-        raw_exchange_response = Column(JSON)
+        execution_mode = Column(String(50))
+        ai_mode = Column(String(50))
         
         # Multi-tenant
-        user_id = Column(String(100), default='default')
+        user_id = Column(String(100), default='default', index=True)
         account_id = Column(String(100), default='default')
-
-
+        
+        __table_args__ = (
+            Index('ix_equity_ts_user', 'ts_utc', 'user_id'),
+        )
+    
+    
+    class Fill(Base):
+        """Histórico de trades/fills da exchange"""
+        __tablename__ = 'fills'
+        
+        id = Column(Integer, primary_key=True, autoincrement=True)
+        trade_id = Column(String(100), unique=True, index=True)  # ID único da exchange
+        
+        ts_utc = Column(DateTime(timezone=True), nullable=False, index=True)
+        symbol = Column(String(20), nullable=False, index=True)
+        side = Column(String(10), nullable=False)  # buy/sell ou long/short
+        
+        qty = Column(Float, nullable=False)
+        price = Column(Float, nullable=False)
+        fee = Column(Float, default=0)
+        realized_pnl = Column(Float, default=0)
+        
+        order_id = Column(String(100))
+        order_type = Column(String(20))  # market/limit
+        is_close = Column(Boolean, default=False)  # True se fechou posição
+        
+        # Contexto
+        leverage = Column(Integer)
+        execution_mode = Column(String(50))
+        ai_reason = Column(Text)
+        
+        # Multi-tenant
+        user_id = Column(String(100), default='default', index=True)
+        account_id = Column(String(100), default='default')
+        
+        __table_args__ = (
+            Index('ix_fills_ts_symbol', 'ts_utc', 'symbol'),
+            Index('ix_fills_user_ts', 'user_id', 'ts_utc'),
+        )
+    
+    
+    class PerformanceBaseline(Base):
+        """Baselines para cálculo de PnL por período"""
+        __tablename__ = 'performance_baselines'
+        
+        id = Column(Integer, primary_key=True, autoincrement=True)
+        
+        period_key = Column(String(20), nullable=False, index=True)  # day/week/month/all_time
+        start_ts = Column(DateTime(timezone=True), nullable=False)
+        start_equity = Column(Float, nullable=False)
+        
+        # Multi-tenant
+        user_id = Column(String(100), default='default', index=True)
+        account_id = Column(String(100), default='default')
+        
+        __table_args__ = (
+            Index('ix_baseline_user_period', 'user_id', 'period_key'),
+        )
+    
+    
     class ErrorRecord(Base):
         """Log de erros para observabilidade"""
         __tablename__ = 'errors'
@@ -146,16 +145,12 @@ if SQLALCHEMY_AVAILABLE:
         id = Column(Integer, primary_key=True, autoincrement=True)
         ts_utc = Column(DateTime(timezone=True), nullable=False, index=True)
         
-        # Error info
-        scope = Column(String(50))  # GLOBAL_IA/EXECUTION/TELEGRAM/API
+        scope = Column(String(50))
         symbol = Column(String(20))
         message = Column(Text)
         stacktrace = Column(Text)
-        
-        # Extra
         meta_json = Column(JSON)
         
-        # Multi-tenant
         user_id = Column(String(100), default='default')
         account_id = Column(String(100), default='default')
 
@@ -166,22 +161,20 @@ if SQLALCHEMY_AVAILABLE:
 
 class TelemetryStore:
     """
-    Classe principal para persistência de telemetria.
+    Data Engine Premium para persistência de telemetria.
     
-    Conecta ao Postgres via DATABASE_URL e oferece métodos
-    para armazenar snapshots, trades e erros.
+    Features:
+    - Equity curve all-time
+    - Histórico de fills/trades
+    - Baselines para PnL dia/semana/mês
+    - Métricas de performance
     """
     
     def __init__(self, database_url: str = None):
-        """
-        Inicializa conexão com banco.
-        
-        Args:
-            database_url: URL do Postgres (default: env DATABASE_URL)
-        """
         self.enabled = False
         self.engine = None
         self.Session = None
+        self._last_sync_ts = None
         
         if not SQLALCHEMY_AVAILABLE:
             logger.warning("[TELEMETRY] SQLAlchemy não disponível - telemetria desabilitada")
@@ -212,7 +205,10 @@ class TelemetryStore:
             self.Session = sessionmaker(bind=self.engine)
             
             self.enabled = True
-            logger.info("[TELEMETRY] ✅ Store inicializado com sucesso")
+            logger.info("[TELEMETRY] ✅ Data Engine inicializado com sucesso")
+            
+            # Inicializa baselines se necessário
+            self._init_baselines()
             
         except Exception as e:
             logger.error(f"[TELEMETRY] ❌ Erro ao conectar: {e}")
@@ -236,15 +232,117 @@ class TelemetryStore:
         finally:
             session.close()
     
-    def store_snapshot(self, snapshot: Dict[str, Any]) -> bool:
-        """
-        Armazena snapshot do bot.
+    # ============================================================
+    # BASELINES
+    # ============================================================
+    
+    def _init_baselines(self):
+        """Inicializa baselines se não existirem"""
+        try:
+            with self.get_session() as session:
+                if session is None:
+                    return
+                
+                # Verifica se all_time existe
+                existing = session.query(PerformanceBaseline).filter_by(
+                    period_key='all_time',
+                    user_id='default'
+                ).first()
+                
+                if not existing:
+                    logger.info("[TELEMETRY] Baselines serão criados no primeiro snapshot")
+        except Exception as e:
+            logger.error(f"[TELEMETRY] Erro ao verificar baselines: {e}")
+    
+    def _update_baselines(self, equity: float, session):
+        """Atualiza baselines conforme necessário"""
+        now = datetime.now(timezone.utc)
         
-        Args:
-            snapshot: Dict com estado do bot (de build_runtime_snapshot)
+        try:
+            # ALL_TIME - criar se não existe
+            all_time = session.query(PerformanceBaseline).filter_by(
+                period_key='all_time', user_id='default'
+            ).first()
             
-        Returns:
-            True se gravou com sucesso
+            if not all_time:
+                all_time = PerformanceBaseline(
+                    period_key='all_time',
+                    start_ts=now,
+                    start_equity=equity
+                )
+                session.add(all_time)
+                logger.info(f"[TELEMETRY] 📊 Baseline ALL_TIME criado: ${equity:.2f}")
+            
+            # DAY - reset se mudou o dia
+            day_baseline = session.query(PerformanceBaseline).filter_by(
+                period_key='day', user_id='default'
+            ).first()
+            
+            if not day_baseline or day_baseline.start_ts.date() < now.date():
+                if day_baseline:
+                    day_baseline.start_ts = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                    day_baseline.start_equity = equity
+                else:
+                    session.add(PerformanceBaseline(
+                        period_key='day',
+                        start_ts=now.replace(hour=0, minute=0, second=0, microsecond=0),
+                        start_equity=equity
+                    ))
+            
+            # WEEK - reset se mudou a semana (segunda-feira)
+            week_baseline = session.query(PerformanceBaseline).filter_by(
+                period_key='week', user_id='default'
+            ).first()
+            
+            week_start = now - timedelta(days=now.weekday())
+            week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            if not week_baseline or week_baseline.start_ts < week_start:
+                if week_baseline:
+                    week_baseline.start_ts = week_start
+                    week_baseline.start_equity = equity
+                else:
+                    session.add(PerformanceBaseline(
+                        period_key='week',
+                        start_ts=week_start,
+                        start_equity=equity
+                    ))
+            
+            # MONTH - reset se mudou o mês
+            month_baseline = session.query(PerformanceBaseline).filter_by(
+                period_key='month', user_id='default'
+            ).first()
+            
+            month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            
+            if not month_baseline or month_baseline.start_ts < month_start:
+                if month_baseline:
+                    month_baseline.start_ts = month_start
+                    month_baseline.start_equity = equity
+                else:
+                    session.add(PerformanceBaseline(
+                        period_key='month',
+                        start_ts=month_start,
+                        start_equity=equity
+                    ))
+                    
+        except Exception as e:
+            logger.error(f"[TELEMETRY] Erro ao atualizar baselines: {e}")
+    
+    # ============================================================
+    # EQUITY SNAPSHOTS
+    # ============================================================
+    
+    def record_equity_snapshot(self, 
+                               equity: float, 
+                               unrealized: float = 0,
+                               positions_count: int = 0,
+                               execution_mode: str = None,
+                               ai_mode: str = None) -> bool:
+        """
+        Registra snapshot de equity.
+        
+        Chamado a cada 30-60s pelo bot.
         """
         if not self.enabled:
             return False
@@ -254,76 +352,89 @@ class TelemetryStore:
                 if session is None:
                     return False
                 
-                # Extrai campos
-                execution = snapshot.get('execution', {})
-                account = snapshot.get('account', {})
-                positions = snapshot.get('positions', {})
-                ai_budget = snapshot.get('ai_budget', {})
-                global_ia = snapshot.get('global_ia', {})
-                market = snapshot.get('market', {})
+                now = datetime.now(timezone.utc)
                 
-                # Parse timestamps
-                global_ia_last_call = None
-                if global_ia.get('last_call_time'):
-                    try:
-                        global_ia_last_call = datetime.fromisoformat(
-                            global_ia['last_call_time'].replace('Z', '+00:00')
-                        )
-                    except:
-                        pass
+                # Evita duplicatas muito próximas (30s)
+                last = session.query(EquitySnapshot).order_by(
+                    desc(EquitySnapshot.ts_utc)
+                ).first()
                 
-                record = SnapshotRecord(
-                    ts_utc=datetime.now(timezone.utc),
-                    
-                    mode_execution=execution.get('mode'),
-                    ai_mode=execution.get('trading_mode'),
-                    is_paused=execution.get('is_paused', False),
-                    
-                    equity=account.get('equity'),
-                    free_margin=account.get('free_margin'),
-                    day_pnl_pct=account.get('day_pnl_pct'),
-                    week_pnl_pct=account.get('week_pnl_pct'),
-                    daily_drawdown_pct=account.get('daily_drawdown_pct'),
-                    
-                    open_positions_count=positions.get('count', 0),
-                    total_positions_pnl_usd=positions.get('total_pnl_usd', 0),
-                    
-                    claude_calls_today=ai_budget.get('claude_calls_today', 0),
-                    claude_limit_per_day=ai_budget.get('claude_limit_per_day', 12),
-                    openai_calls_today=ai_budget.get('openai_calls_today', 0),
-                    openai_limit_per_day=ai_budget.get('openai_limit_per_day', 40),
-                    
-                    global_ia_active=global_ia.get('enabled', False),
-                    global_ia_last_call_ts=global_ia_last_call,
-                    
-                    symbols_monitored=market.get('symbols_monitored', 0),
-                    
-                    raw_json=snapshot
+                if last and (now - last.ts_utc).total_seconds() < 25:
+                    return True  # Skip, muito recente
+                
+                # Atualiza baselines
+                self._update_baselines(equity, session)
+                
+                # Insere snapshot
+                snapshot = EquitySnapshot(
+                    ts_utc=now,
+                    equity_usd=equity,
+                    unrealized_usd=unrealized,
+                    positions_count=positions_count,
+                    execution_mode=execution_mode,
+                    ai_mode=ai_mode
                 )
+                session.add(snapshot)
                 
-                session.add(record)
-                logger.debug("[TELEMETRY] Snapshot armazenado")
+                logger.debug(f"[TELEMETRY] Equity snapshot: ${equity:.2f}")
                 return True
                 
         except Exception as e:
-            logger.error(f"[TELEMETRY] Erro ao gravar snapshot: {e}")
+            logger.error(f"[TELEMETRY] Erro ao gravar equity snapshot: {e}")
             return False
     
-    def store_trade_event(self, trade_event: Dict[str, Any]) -> bool:
-        """
-        Armazena evento de trade (open/close/adjust/etc).
+    def get_equity_series(self, range_hours: int = 24, limit: int = 2000) -> List[Dict]:
+        """Retorna série de equity para gráfico"""
+        if not self.enabled:
+            return []
         
-        Args:
-            trade_event: Dict com:
-                - symbol, side, action_type
-                - size, price, leverage
-                - pnl_usd, pnl_pct, fees_est_usd
-                - ai_reason, ai_confidence
-                - raw_ai_decision, raw_exchange_response
-                - state_snapshot (opcional)
+        try:
+            with self.get_session() as session:
+                if session is None:
+                    return []
                 
-        Returns:
-            True se gravou com sucesso
+                if range_hours == -1:  # ALL TIME
+                    cutoff = datetime(2020, 1, 1, tzinfo=timezone.utc)
+                else:
+                    cutoff = datetime.now(timezone.utc) - timedelta(hours=range_hours)
+                
+                records = session.query(EquitySnapshot)\
+                    .filter(EquitySnapshot.ts_utc >= cutoff)\
+                    .order_by(asc(EquitySnapshot.ts_utc))\
+                    .limit(limit)\
+                    .all()
+                
+                return [
+                    {
+                        'ts': r.ts_utc.isoformat(),
+                        'equity_usd': r.equity_usd,
+                        'unrealized_usd': r.unrealized_usd,
+                        'positions_count': r.positions_count
+                    }
+                    for r in records
+                ]
+                
+        except Exception as e:
+            logger.error(f"[TELEMETRY] Erro ao buscar série equity: {e}")
+            return []
+    
+    # ============================================================
+    # FILLS / TRADES
+    # ============================================================
+    
+    def record_fill(self, fill_data: Dict[str, Any]) -> bool:
+        """
+        Registra fill/trade da exchange.
+        
+        fill_data deve conter:
+        - trade_id (unique)
+        - ts_utc ou timestamp
+        - symbol
+        - side
+        - qty
+        - price
+        - fee (opcional)
+        - realized_pnl (opcional)
         """
         if not self.enabled:
             return False
@@ -333,61 +444,337 @@ class TelemetryStore:
                 if session is None:
                     return False
                 
-                # Gera hash do state se fornecido
-                state_hash = None
-                if trade_event.get('state_snapshot'):
-                    state_str = json.dumps(trade_event['state_snapshot'], sort_keys=True)
-                    state_hash = hashlib.sha256(state_str.encode()).hexdigest()[:64]
+                trade_id = fill_data.get('trade_id') or fill_data.get('tid') or \
+                          f"{fill_data.get('symbol')}_{fill_data.get('ts_utc', datetime.now().isoformat())}"
                 
-                record = TradeRecord(
-                    ts_utc=datetime.now(timezone.utc),
-                    
-                    symbol=trade_event.get('symbol'),
-                    side=trade_event.get('side'),
-                    action_type=trade_event.get('action_type'),
-                    
-                    size=trade_event.get('size'),
-                    price=trade_event.get('price'),
-                    leverage=trade_event.get('leverage'),
-                    
-                    pnl_usd=trade_event.get('pnl_usd'),
-                    pnl_pct=trade_event.get('pnl_pct'),
-                    fees_est_usd=trade_event.get('fees_est_usd'),
-                    
-                    mode_execution=trade_event.get('mode_execution'),
-                    strategy_tag=trade_event.get('strategy_tag'),
-                    
-                    ai_reason=trade_event.get('ai_reason'),
-                    ai_confidence=trade_event.get('ai_confidence'),
-                    
-                    state_hash=state_hash,
-                    raw_ai_decision_json=trade_event.get('raw_ai_decision'),
-                    raw_exchange_response=trade_event.get('raw_exchange_response')
+                # Verifica se já existe
+                existing = session.query(Fill).filter_by(trade_id=str(trade_id)).first()
+                if existing:
+                    return True  # Já existe, skip
+                
+                # Parse timestamp
+                ts = fill_data.get('ts_utc') or fill_data.get('timestamp')
+                if isinstance(ts, str):
+                    ts = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                elif isinstance(ts, (int, float)):
+                    ts = datetime.fromtimestamp(ts / 1000 if ts > 1e12 else ts, tz=timezone.utc)
+                else:
+                    ts = datetime.now(timezone.utc)
+                
+                fill = Fill(
+                    trade_id=str(trade_id),
+                    ts_utc=ts,
+                    symbol=fill_data.get('symbol', ''),
+                    side=fill_data.get('side', ''),
+                    qty=float(fill_data.get('qty', 0) or fill_data.get('sz', 0)),
+                    price=float(fill_data.get('price', 0) or fill_data.get('px', 0)),
+                    fee=float(fill_data.get('fee', 0)),
+                    realized_pnl=float(fill_data.get('realized_pnl', 0) or fill_data.get('closedPnl', 0)),
+                    order_id=fill_data.get('order_id') or fill_data.get('oid'),
+                    order_type=fill_data.get('order_type'),
+                    is_close=fill_data.get('is_close', False),
+                    leverage=fill_data.get('leverage'),
+                    execution_mode=fill_data.get('execution_mode'),
+                    ai_reason=fill_data.get('ai_reason')
                 )
+                session.add(fill)
                 
-                session.add(record)
-                logger.info(f"[TELEMETRY] Trade registrado: {trade_event.get('symbol')} {trade_event.get('action_type')}")
+                logger.debug(f"[TELEMETRY] Fill recorded: {fill_data.get('symbol')} {fill_data.get('side')}")
                 return True
                 
         except Exception as e:
-            logger.error(f"[TELEMETRY] Erro ao gravar trade: {e}")
+            logger.error(f"[TELEMETRY] Erro ao gravar fill: {e}")
             return False
+    
+    def record_fills_batch(self, fills: List[Dict]) -> int:
+        """Registra múltiplos fills de uma vez (para backfill)"""
+        if not self.enabled:
+            return 0
+        
+        count = 0
+        for fill in fills:
+            if self.record_fill(fill):
+                count += 1
+        
+        logger.info(f"[TELEMETRY] Batch recorded: {count}/{len(fills)} fills")
+        return count
+    
+    def get_fills(self, 
+                  range_hours: int = 168, 
+                  symbol: str = None,
+                  side: str = None,
+                  only_profitable: bool = None,
+                  limit: int = 500) -> List[Dict]:
+        """Retorna histórico de fills"""
+        if not self.enabled:
+            return []
+        
+        try:
+            with self.get_session() as session:
+                if session is None:
+                    return []
+                
+                if range_hours == -1:
+                    cutoff = datetime(2020, 1, 1, tzinfo=timezone.utc)
+                else:
+                    cutoff = datetime.now(timezone.utc) - timedelta(hours=range_hours)
+                
+                query = session.query(Fill).filter(Fill.ts_utc >= cutoff)
+                
+                if symbol:
+                    query = query.filter(Fill.symbol == symbol)
+                if side:
+                    query = query.filter(Fill.side == side)
+                if only_profitable is True:
+                    query = query.filter(Fill.realized_pnl > 0)
+                elif only_profitable is False:
+                    query = query.filter(Fill.realized_pnl < 0)
+                
+                records = query.order_by(desc(Fill.ts_utc)).limit(limit).all()
+                
+                return [
+                    {
+                        'id': r.id,
+                        'trade_id': r.trade_id,
+                        'ts': r.ts_utc.isoformat(),
+                        'symbol': r.symbol,
+                        'side': r.side,
+                        'qty': r.qty,
+                        'price': r.price,
+                        'fee': r.fee,
+                        'realized_pnl': r.realized_pnl,
+                        'is_close': r.is_close,
+                        'ai_reason': r.ai_reason
+                    }
+                    for r in records
+                ]
+                
+        except Exception as e:
+            logger.error(f"[TELEMETRY] Erro ao buscar fills: {e}")
+            return []
+    
+    # ============================================================
+    # PNL SUMMARY
+    # ============================================================
+    
+    def get_pnl_summary(self, current_equity: float = None) -> Dict[str, Any]:
+        """
+        Retorna resumo de PnL para todos os períodos.
+        
+        Retorna:
+        - pnl_all_time_pct, pnl_all_time_usd
+        - pnl_day_pct, pnl_day_usd
+        - pnl_week_pct, pnl_week_usd
+        - pnl_month_pct, pnl_month_usd
+        """
+        if not self.enabled:
+            return {}
+        
+        try:
+            with self.get_session() as session:
+                if session is None:
+                    return {}
+                
+                # Busca equity atual se não fornecido
+                if current_equity is None:
+                    last_snapshot = session.query(EquitySnapshot)\
+                        .order_by(desc(EquitySnapshot.ts_utc)).first()
+                    current_equity = last_snapshot.equity_usd if last_snapshot else 0
+                
+                if current_equity <= 0:
+                    return {}
+                
+                result = {
+                    'current_equity': current_equity,
+                    'pnl_all_time_pct': 0,
+                    'pnl_all_time_usd': 0,
+                    'pnl_day_pct': 0,
+                    'pnl_day_usd': 0,
+                    'pnl_week_pct': 0,
+                    'pnl_week_usd': 0,
+                    'pnl_month_pct': 0,
+                    'pnl_month_usd': 0,
+                }
+                
+                # Busca baselines
+                baselines = session.query(PerformanceBaseline).filter_by(user_id='default').all()
+                
+                for b in baselines:
+                    if b.start_equity > 0:
+                        pnl_usd = current_equity - b.start_equity
+                        pnl_pct = (pnl_usd / b.start_equity) * 100
+                        
+                        if b.period_key == 'all_time':
+                            result['pnl_all_time_pct'] = round(pnl_pct, 2)
+                            result['pnl_all_time_usd'] = round(pnl_usd, 2)
+                            result['all_time_start_equity'] = b.start_equity
+                            result['all_time_start_date'] = b.start_ts.isoformat()
+                        elif b.period_key == 'day':
+                            result['pnl_day_pct'] = round(pnl_pct, 2)
+                            result['pnl_day_usd'] = round(pnl_usd, 2)
+                        elif b.period_key == 'week':
+                            result['pnl_week_pct'] = round(pnl_pct, 2)
+                            result['pnl_week_usd'] = round(pnl_usd, 2)
+                        elif b.period_key == 'month':
+                            result['pnl_month_pct'] = round(pnl_pct, 2)
+                            result['pnl_month_usd'] = round(pnl_usd, 2)
+                
+                return result
+                
+        except Exception as e:
+            logger.error(f"[TELEMETRY] Erro ao calcular PnL summary: {e}")
+            return {}
+    
+    # ============================================================
+    # METRICS
+    # ============================================================
+    
+    def get_performance_metrics(self, range_hours: int = -1) -> Dict[str, Any]:
+        """
+        Calcula métricas de performance baseadas nos fills.
+        
+        Retorna:
+        - winrate, profit_factor, avg_win, avg_loss
+        - expectancy, max_drawdown
+        - trades_count, trades_today, trades_week, trades_month
+        """
+        if not self.enabled:
+            return {}
+        
+        try:
+            with self.get_session() as session:
+                if session is None:
+                    return {}
+                
+                now = datetime.now(timezone.utc)
+                
+                # Busca fills com PnL realizado
+                if range_hours == -1:
+                    fills_query = session.query(Fill).filter(Fill.realized_pnl != 0)
+                else:
+                    cutoff = now - timedelta(hours=range_hours)
+                    fills_query = session.query(Fill).filter(
+                        Fill.ts_utc >= cutoff,
+                        Fill.realized_pnl != 0
+                    )
+                
+                fills = fills_query.all()
+                
+                if not fills:
+                    return {
+                        'trades_count': 0,
+                        'winrate': 0,
+                        'profit_factor': 0,
+                        'avg_win': 0,
+                        'avg_loss': 0,
+                        'expectancy': 0,
+                        'total_pnl': 0
+                    }
+                
+                wins = [f for f in fills if f.realized_pnl > 0]
+                losses = [f for f in fills if f.realized_pnl < 0]
+                
+                total_profit = sum(f.realized_pnl for f in wins)
+                total_loss = abs(sum(f.realized_pnl for f in losses))
+                
+                winrate = (len(wins) / len(fills) * 100) if fills else 0
+                profit_factor = (total_profit / total_loss) if total_loss > 0 else 0
+                avg_win = (total_profit / len(wins)) if wins else 0
+                avg_loss = (total_loss / len(losses)) if losses else 0
+                
+                # Expectancy = (Win% * AvgWin) - (Loss% * AvgLoss)
+                win_pct = len(wins) / len(fills) if fills else 0
+                loss_pct = len(losses) / len(fills) if fills else 0
+                expectancy = (win_pct * avg_win) - (loss_pct * avg_loss)
+                
+                # Max Drawdown da equity curve
+                max_dd = self._calculate_max_drawdown(session, range_hours)
+                
+                # Contagem por período
+                today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                week_start = now - timedelta(days=now.weekday())
+                week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+                month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                
+                trades_today = session.query(Fill).filter(
+                    Fill.ts_utc >= today_start,
+                    Fill.realized_pnl != 0
+                ).count()
+                
+                trades_week = session.query(Fill).filter(
+                    Fill.ts_utc >= week_start,
+                    Fill.realized_pnl != 0
+                ).count()
+                
+                trades_month = session.query(Fill).filter(
+                    Fill.ts_utc >= month_start,
+                    Fill.realized_pnl != 0
+                ).count()
+                
+                # Total de fees
+                total_fees = sum(f.fee for f in fills if f.fee)
+                
+                return {
+                    'trades_count': len(fills),
+                    'trades_today': trades_today,
+                    'trades_week': trades_week,
+                    'trades_month': trades_month,
+                    'wins': len(wins),
+                    'losses': len(losses),
+                    'winrate': round(winrate, 1),
+                    'profit_factor': round(profit_factor, 2),
+                    'avg_win': round(avg_win, 2),
+                    'avg_loss': round(avg_loss, 2),
+                    'expectancy': round(expectancy, 2),
+                    'total_profit': round(total_profit, 2),
+                    'total_loss': round(total_loss, 2),
+                    'total_pnl': round(total_profit - total_loss, 2),
+                    'total_fees': round(total_fees, 2),
+                    'max_drawdown_pct': round(max_dd, 2)
+                }
+                
+        except Exception as e:
+            logger.error(f"[TELEMETRY] Erro ao calcular métricas: {e}")
+            return {}
+    
+    def _calculate_max_drawdown(self, session, range_hours: int = -1) -> float:
+        """Calcula max drawdown da equity curve"""
+        try:
+            if range_hours == -1:
+                snapshots = session.query(EquitySnapshot.equity_usd)\
+                    .order_by(asc(EquitySnapshot.ts_utc)).all()
+            else:
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=range_hours)
+                snapshots = session.query(EquitySnapshot.equity_usd)\
+                    .filter(EquitySnapshot.ts_utc >= cutoff)\
+                    .order_by(asc(EquitySnapshot.ts_utc)).all()
+            
+            if not snapshots:
+                return 0
+            
+            peak = snapshots[0].equity_usd
+            max_dd = 0
+            
+            for s in snapshots:
+                if s.equity_usd > peak:
+                    peak = s.equity_usd
+                
+                dd = ((peak - s.equity_usd) / peak) * 100 if peak > 0 else 0
+                if dd > max_dd:
+                    max_dd = dd
+            
+            return max_dd
+            
+        except Exception as e:
+            logger.error(f"[TELEMETRY] Erro ao calcular max DD: {e}")
+            return 0
+    
+    # ============================================================
+    # ERRORS
+    # ============================================================
     
     def store_error(self, error_dict: Dict[str, Any]) -> bool:
-        """
-        Armazena erro para observabilidade.
-        
-        Args:
-            error_dict: Dict com:
-                - scope: GLOBAL_IA/EXECUTION/TELEGRAM/API
-                - symbol (opcional)
-                - message
-                - stacktrace (opcional)
-                - meta (opcional)
-                
-        Returns:
-            True se gravou com sucesso
-        """
+        """Armazena erro para observabilidade"""
         if not self.enabled:
             return False
         
@@ -404,9 +791,7 @@ class TelemetryStore:
                     stacktrace=error_dict.get('stacktrace'),
                     meta_json=error_dict.get('meta')
                 )
-                
                 session.add(record)
-                logger.debug(f"[TELEMETRY] Erro registrado: {error_dict.get('scope')}")
                 return True
                 
         except Exception as e:
@@ -414,178 +799,110 @@ class TelemetryStore:
             return False
     
     # ============================================================
-    # QUERY METHODS (para API)
+    # BACKFILL (para importar histórico)
     # ============================================================
     
-    def get_snapshots_series(self, 
-                             range_hours: int = 24, 
-                             limit: int = 1000) -> List[Dict]:
+    def backfill_from_exchange(self, client, days: int = 30) -> int:
         """
-        Retorna série de snapshots para gráfico.
+        Faz backfill de fills da exchange.
         
         Args:
-            range_hours: Quantas horas para trás
-            limit: Máximo de registros
+            client: Client da Hyperliquid
+            days: Quantos dias para trás
             
         Returns:
-            Lista de dicts com ts, equity, day_pnl_pct, etc.
+            Número de fills importados
         """
         if not self.enabled:
-            return []
+            return 0
         
         try:
-            with self.get_session() as session:
-                if session is None:
-                    return []
+            # Tenta buscar histórico de fills da Hyperliquid
+            # A API varia conforme o client implementado
+            
+            fills = []
+            
+            # Método 1: get_user_fills (se existir)
+            if hasattr(client, 'get_user_fills'):
+                raw_fills = client.get_user_fills(days=days)
+                if raw_fills:
+                    fills = raw_fills
+            
+            # Método 2: get_fills (alternativo)
+            elif hasattr(client, 'get_fills'):
+                raw_fills = client.get_fills()
+                if raw_fills:
+                    fills = raw_fills
+            
+            # Método 3: info.user_fills (SDK oficial)
+            elif hasattr(client, 'info') and hasattr(client.info, 'user_fills'):
+                raw_fills = client.info.user_fills(client.address)
+                if raw_fills:
+                    fills = raw_fills
+            
+            if not fills:
+                logger.warning("[TELEMETRY] Nenhum fill encontrado para backfill")
+                return 0
+            
+            # Processa e grava
+            count = 0
+            for fill in fills:
+                # Normaliza formato
+                normalized = {
+                    'trade_id': fill.get('tid') or fill.get('trade_id') or fill.get('id'),
+                    'ts_utc': fill.get('time') or fill.get('ts') or fill.get('timestamp'),
+                    'symbol': fill.get('coin') or fill.get('symbol'),
+                    'side': fill.get('side') or fill.get('dir'),
+                    'qty': fill.get('sz') or fill.get('qty') or fill.get('size'),
+                    'price': fill.get('px') or fill.get('price'),
+                    'fee': fill.get('fee', 0),
+                    'realized_pnl': fill.get('closedPnl') or fill.get('realized_pnl', 0),
+                    'order_id': fill.get('oid') or fill.get('order_id'),
+                    'is_close': fill.get('closedPnl', 0) != 0
+                }
                 
-                from sqlalchemy import desc
-                from datetime import timedelta
-                
-                cutoff = datetime.now(timezone.utc) - timedelta(hours=range_hours)
-                
-                records = session.query(SnapshotRecord)\
-                    .filter(SnapshotRecord.ts_utc >= cutoff)\
-                    .order_by(desc(SnapshotRecord.ts_utc))\
-                    .limit(limit)\
-                    .all()
-                
-                return [
-                    {
-                        'ts': r.ts_utc.isoformat() if r.ts_utc else None,
-                        'equity': r.equity,
-                        'day_pnl_pct': r.day_pnl_pct,
-                        'open_positions': r.open_positions_count,
-                        'total_pnl_usd': r.total_positions_pnl_usd
-                    }
-                    for r in reversed(records)
-                ]
-                
+                if self.record_fill(normalized):
+                    count += 1
+            
+            logger.info(f"[TELEMETRY] Backfill completo: {count} fills importados")
+            return count
+            
         except Exception as e:
-            logger.error(f"[TELEMETRY] Erro ao buscar série: {e}")
-            return []
+            logger.error(f"[TELEMETRY] Erro no backfill: {e}")
+            return 0
     
-    def get_trades(self, 
-                   limit: int = 200, 
-                   symbol: str = None,
-                   range_hours: int = 24) -> List[Dict]:
-        """
-        Retorna trades do journal.
-        
-        Args:
-            limit: Máximo de registros
-            symbol: Filtro por símbolo (opcional)
-            range_hours: Quantas horas para trás
-            
-        Returns:
-            Lista de trades
-        """
-        if not self.enabled:
-            return []
-        
-        try:
-            with self.get_session() as session:
-                if session is None:
-                    return []
-                
-                from sqlalchemy import desc
-                from datetime import timedelta
-                
-                cutoff = datetime.now(timezone.utc) - timedelta(hours=range_hours)
-                
-                query = session.query(TradeRecord)\
-                    .filter(TradeRecord.ts_utc >= cutoff)
-                
-                if symbol:
-                    query = query.filter(TradeRecord.symbol == symbol)
-                
-                records = query.order_by(desc(TradeRecord.ts_utc))\
-                    .limit(limit)\
-                    .all()
-                
-                return [
-                    {
-                        'id': r.id,
-                        'ts': r.ts_utc.isoformat() if r.ts_utc else None,
-                        'symbol': r.symbol,
-                        'side': r.side,
-                        'action_type': r.action_type,
-                        'size': r.size,
-                        'price': r.price,
-                        'leverage': r.leverage,
-                        'pnl_usd': r.pnl_usd,
-                        'pnl_pct': r.pnl_pct,
-                        'ai_reason': r.ai_reason,
-                        'strategy_tag': r.strategy_tag
-                    }
-                    for r in records
-                ]
-                
-        except Exception as e:
-            logger.error(f"[TELEMETRY] Erro ao buscar trades: {e}")
-            return []
+    # ============================================================
+    # LEGACY COMPATIBILITY (snapshot antigo)
+    # ============================================================
     
-    def get_metrics(self, range_hours: int = 24) -> Dict[str, Any]:
-        """
-        Calcula métricas agregadas.
-        
-        Args:
-            range_hours: Período de análise
-            
-        Returns:
-            Dict com win_rate, profit_factor, avg_win, avg_loss, etc.
-        """
+    def store_snapshot(self, snapshot: Dict[str, Any]) -> bool:
+        """Compatibilidade com formato antigo de snapshot"""
         if not self.enabled:
-            return {}
+            return False
         
         try:
-            trades = self.get_trades(limit=1000, range_hours=range_hours)
+            account = snapshot.get('account', {})
+            positions = snapshot.get('positions', {})
+            execution = snapshot.get('execution', {})
             
-            if not trades:
-                return {}
-            
-            # Filtra apenas trades de fechamento (CLOSE, SL, TP)
-            closed_trades = [t for t in trades if t.get('action_type') in ['CLOSE', 'SL', 'TP', 'close']]
-            
-            if not closed_trades:
-                return {}
-            
-            wins = [t for t in closed_trades if (t.get('pnl_usd') or 0) > 0]
-            losses = [t for t in closed_trades if (t.get('pnl_usd') or 0) < 0]
-            
-            total_profit = sum(t.get('pnl_usd', 0) for t in wins)
-            total_loss = abs(sum(t.get('pnl_usd', 0) for t in losses))
-            
-            win_rate = len(wins) / len(closed_trades) * 100 if closed_trades else 0
-            profit_factor = total_profit / total_loss if total_loss > 0 else 0
-            avg_win = total_profit / len(wins) if wins else 0
-            avg_loss = total_loss / len(losses) if losses else 0
-            
-            # Expectancy = (Win% * AvgWin) - (Loss% * AvgLoss)
-            win_pct = len(wins) / len(closed_trades) if closed_trades else 0
-            loss_pct = len(losses) / len(closed_trades) if closed_trades else 0
-            expectancy = (win_pct * avg_win) - (loss_pct * avg_loss)
-            
-            return {
-                'total_trades': len(closed_trades),
-                'wins': len(wins),
-                'losses': len(losses),
-                'win_rate': round(win_rate, 1),
-                'profit_factor': round(profit_factor, 2),
-                'avg_win': round(avg_win, 2),
-                'avg_loss': round(avg_loss, 2),
-                'expectancy': round(expectancy, 2),
-                'total_profit': round(total_profit, 2),
-                'total_loss': round(total_loss, 2),
-                'net_pnl': round(total_profit - total_loss, 2)
-            }
-            
+            return self.record_equity_snapshot(
+                equity=account.get('equity', 0),
+                unrealized=positions.get('total_pnl_usd', 0),
+                positions_count=positions.get('count', 0),
+                execution_mode=execution.get('mode'),
+                ai_mode=execution.get('trading_mode')
+            )
         except Exception as e:
-            logger.error(f"[TELEMETRY] Erro ao calcular métricas: {e}")
-            return {}
+            logger.error(f"[TELEMETRY] Erro ao converter snapshot: {e}")
+            return False
+    
+    def store_trade_event(self, trade_event: Dict[str, Any]) -> bool:
+        """Compatibilidade com formato antigo de trade event"""
+        return self.record_fill(trade_event)
 
 
 # ============================================================
-# SINGLETON INSTANCE
+# SINGLETON
 # ============================================================
 
 _telemetry_store: Optional[TelemetryStore] = None
@@ -604,3 +921,4 @@ def init_telemetry(database_url: str = None) -> TelemetryStore:
     global _telemetry_store
     _telemetry_store = TelemetryStore(database_url)
     return _telemetry_store
+
