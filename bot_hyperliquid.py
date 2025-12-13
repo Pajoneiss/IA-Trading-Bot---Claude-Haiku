@@ -2133,10 +2133,37 @@ class HyperliquidBot:
                     
             elif intent == 'increase':
                 if self.position_manager.has_position(symbol):
-                    # Calcula tamanho do aumento
-                    size_usd = action.size_usd
-                    add_size = size_usd / current_price
-                    self._execute_pyramid_add(symbol, add_size, current_price, action.reason)
+                    # 🔴 CORREÇÃO CRÍTICA: Usar ActionExecutor para garantir conversão correta
+                    # O size_usd é o NOTIONAL em USD, não um size_pct!
+                    try:
+                        from bot.action_executor import get_action_executor, init_action_executor
+                        executor = get_action_executor(self) or init_action_executor(self)
+                        
+                        result = executor.execute({
+                            'intent': 'increase',
+                            'symbol': symbol,
+                            'delta_notional_usd': action.size_usd,  # SEMPRE USD!
+                            'reason': action.reason
+                        }, prices)
+                        
+                        if not result.success:
+                            self.logger.warning(f"[GLOBAL_IA] Increase falhou: {result.message}")
+                    except Exception as e:
+                        self.logger.error(f"[GLOBAL_IA] Erro no increase: {e}")
+                        # Fallback para método antigo com sanity check
+                        size_usd = action.size_usd
+                        equity = self.risk_manager.current_equity if self.risk_manager else 1000
+                        
+                        # Sanity check: se size_usd > 5x equity, provavelmente é bug
+                        if size_usd > equity * 5:
+                            self.logger.warning(
+                                f"[SANITY_CHECK] ⚠️ {symbol} INCREASE ABSURDO: ${size_usd:.2f} > 5x equity (${equity:.2f}). "
+                                f"Provável bug de unidade. CLAMPED para ${equity:.2f}"
+                            )
+                            size_usd = equity  # Clamp para 1x equity
+                        
+                        add_size = size_usd / current_price
+                        self._execute_pyramid_add_safe(symbol, add_size, size_usd, current_price, action.reason)
                     
             elif intent == 'decrease':
                 if self.position_manager.has_position(symbol):
@@ -3162,6 +3189,8 @@ class HyperliquidBot:
         """
         Executa add de posição (pyramiding).
         
+        ⚠️ DEPRECATED: Use _execute_pyramid_add_safe ou ActionExecutor.
+        
         Args:
             symbol: Símbolo
             size_pct: Percentual da posição atual para adicionar
@@ -3232,6 +3261,109 @@ class HyperliquidBot:
                 
         except Exception as e:
             self.logger.error(f"❌ Exceção ao executar PYRAMID ADD: {e}")
+    
+    def _execute_pyramid_add_safe(self, symbol: str, add_size: float, notional_usd: float, current_price: float, reason: str):
+        """
+        Executa add de posição com sanity checks.
+        
+        🔴 VERSÃO SEGURA com validações anti-bug.
+        
+        Args:
+            symbol: Símbolo
+            add_size: Tamanho em COINS para adicionar (já calculado)
+            notional_usd: Valor em USD equivalente (para log)
+            current_price: Preço atual
+            reason: Motivo do add
+        """
+        import math
+        
+        position = self.position_manager.get_position(symbol)
+        if not position:
+            self.logger.warning(f"[PYRAMID_SAFE] {symbol}: Posição não encontrada para add")
+            return
+        
+        # ===== SANITY CHECKS =====
+        
+        # 1. Busca constraints do ativo
+        sz_decimals = self.client.sz_decimals_cache.get(symbol, 4)
+        min_size = 10 ** (-sz_decimals)
+        min_notional = self.risk_manager.min_notional if hasattr(self.risk_manager, 'min_notional') else 0.5
+        
+        # 2. Arredonda DOWN para segurança
+        factor = 10 ** sz_decimals
+        add_size = math.floor(add_size * factor) / factor
+        
+        # 3. Valida min_size
+        if add_size < min_size:
+            self.logger.warning(f"[PYRAMID_SAFE] {symbol} SKIP: add_size={add_size} < min_size={min_size}")
+            return
+        
+        # 4. Valida notional
+        actual_notional = add_size * current_price
+        if actual_notional < min_notional:
+            self.logger.warning(f"[PYRAMID_SAFE] {symbol} SKIP: notional=${actual_notional:.2f} < min_notional=${min_notional}")
+            return
+        
+        # ===== LOG ESTRUTURADO =====
+        self.logger.info(
+            f"📈 [PYRAMID_SAFE] {symbol} | "
+            f"requested_notional=${notional_usd:.2f} | "
+            f"mark_price=${current_price:.4f} | "
+            f"add_size={add_size} | "
+            f"actual_notional=${actual_notional:.2f} | "
+            f"current_position={position.size} | "
+            f"reason={reason}"
+        )
+        
+        # ===== EXECUÇÃO =====
+        
+        if not self.live_trading:
+            # PAPER MODE
+            self.position_manager.execute_pyramid_add(symbol, add_size, current_price)
+            self.logger.info(f"[PYRAMID_SAFE] ✅ {symbol} add {add_size} (PAPER)")
+            
+            try:
+                self.telegram.send(
+                    f"📈 PYRAMID ADD {symbol} (PAPER)\n"
+                    f"Add: {add_size:.6f} (${actual_notional:.2f})\n"
+                    f"Preço: ${current_price:.2f}\n"
+                    f"Motivo: {reason}"
+                )
+            except:
+                pass
+            return
+        
+        # LIVE MODE
+        try:
+            is_buy = (position.side == 'long')
+            
+            result = self.client.place_order(
+                coin=symbol,
+                is_buy=is_buy,
+                size=add_size,
+                price=current_price,
+                order_type="market",
+                reduce_only=False
+            )
+            
+            if result and result.get('status') == 'ok':
+                self.position_manager.execute_pyramid_add(symbol, add_size, current_price)
+                self.logger.info(f"[PYRAMID_SAFE] ✅ {symbol} add {add_size} executado")
+                
+                try:
+                    self.telegram.send(
+                        f"📈 PYRAMID ADD {symbol}\n"
+                        f"Add: {add_size:.6f} (${actual_notional:.2f})\n"
+                        f"Preço: ${current_price:.2f}\n"
+                        f"Motivo: {reason}"
+                    )
+                except:
+                    pass
+            else:
+                self.logger.error(f"[PYRAMID_SAFE] ❌ Erro: {result}")
+                
+        except Exception as e:
+            self.logger.error(f"[PYRAMID_SAFE] ❌ Exceção: {e}")
     # ========================================================================
     
     def _execute_close(self, action: Dict[str, Any], prices: Dict[str, float]):
