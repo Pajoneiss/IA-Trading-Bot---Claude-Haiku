@@ -804,11 +804,11 @@ class TelemetryStore:
     
     def backfill_from_exchange(self, client, days: int = 30) -> int:
         """
-        Faz backfill de fills da exchange.
+        Faz backfill de fills da exchange Hyperliquid.
         
         Args:
-            client: Client da Hyperliquid
-            days: Quantos dias para trás
+            client: Client da Hyperliquid (HyperliquidBotClient)
+            days: Quantos dias para trás (não usado, busca todos disponíveis)
             
         Returns:
             Número de fills importados
@@ -817,58 +817,129 @@ class TelemetryStore:
             return 0
         
         try:
-            # Tenta buscar histórico de fills da Hyperliquid
-            # A API varia conforme o client implementado
-            
             fills = []
             
-            # Método 1: get_user_fills (se existir)
+            # Método 1: get_user_fills (implementado no client)
             if hasattr(client, 'get_user_fills'):
-                raw_fills = client.get_user_fills(days=days)
+                raw_fills = client.get_user_fills(limit=2000)
                 if raw_fills:
                     fills = raw_fills
+                    logger.info(f"[TELEMETRY] Backfill via get_user_fills: {len(fills)} fills")
             
-            # Método 2: get_fills (alternativo)
-            elif hasattr(client, 'get_fills'):
-                raw_fills = client.get_fills()
+            # Método 2: get_user_fills_by_time
+            if not fills and hasattr(client, 'get_user_fills_by_time'):
+                raw_fills = client.get_user_fills_by_time()
                 if raw_fills:
                     fills = raw_fills
-            
-            # Método 3: info.user_fills (SDK oficial)
-            elif hasattr(client, 'info') and hasattr(client.info, 'user_fills'):
-                raw_fills = client.info.user_fills(client.address)
-                if raw_fills:
-                    fills = raw_fills
+                    logger.info(f"[TELEMETRY] Backfill via get_user_fills_by_time: {len(fills)} fills")
             
             if not fills:
                 logger.warning("[TELEMETRY] Nenhum fill encontrado para backfill")
                 return 0
             
-            # Processa e grava
+            # Grava fills
             count = 0
             for fill in fills:
-                # Normaliza formato
+                # Normaliza side (Hyperliquid usa 'A'/'B' ou 'Open Long'/'Close Short')
+                side = fill.get('side', '')
+                if side == 'A':
+                    side = 'sell'
+                elif side == 'B':
+                    side = 'buy'
+                elif 'Long' in str(fill.get('dir', '')):
+                    side = 'long'
+                elif 'Short' in str(fill.get('dir', '')):
+                    side = 'short'
+                
                 normalized = {
-                    'trade_id': fill.get('tid') or fill.get('trade_id') or fill.get('id'),
-                    'ts_utc': fill.get('time') or fill.get('ts') or fill.get('timestamp'),
-                    'symbol': fill.get('coin') or fill.get('symbol'),
-                    'side': fill.get('side') or fill.get('dir'),
-                    'qty': fill.get('sz') or fill.get('qty') or fill.get('size'),
-                    'price': fill.get('px') or fill.get('price'),
+                    'trade_id': fill.get('trade_id'),
+                    'ts_utc': fill.get('ts_utc'),
+                    'symbol': fill.get('symbol'),
+                    'side': side,
+                    'qty': fill.get('qty'),
+                    'price': fill.get('price'),
                     'fee': fill.get('fee', 0),
-                    'realized_pnl': fill.get('closedPnl') or fill.get('realized_pnl', 0),
-                    'order_id': fill.get('oid') or fill.get('order_id'),
-                    'is_close': fill.get('closedPnl', 0) != 0
+                    'realized_pnl': fill.get('realized_pnl', 0),
+                    'order_id': fill.get('order_id'),
+                    'is_close': fill.get('is_close', False)
                 }
                 
                 if self.record_fill(normalized):
                     count += 1
             
-            logger.info(f"[TELEMETRY] Backfill completo: {count} fills importados")
+            logger.info(f"[TELEMETRY] ✅ Backfill completo: {count} fills importados")
             return count
             
         except Exception as e:
-            logger.error(f"[TELEMETRY] Erro no backfill: {e}")
+            logger.error(f"[TELEMETRY] ❌ Erro no backfill: {e}")
+            return 0
+    
+    def sync_fills_incremental(self, client) -> int:
+        """
+        Sync incremental de fills desde o último sync.
+        
+        Deve ser chamado periodicamente (ex: a cada 2-5 min).
+        
+        Returns:
+            Número de novos fills
+        """
+        if not self.enabled:
+            return 0
+        
+        try:
+            # Busca último fill registrado
+            with self.get_session() as session:
+                if session is None:
+                    return 0
+                
+                last_fill = session.query(Fill).order_by(desc(Fill.ts_utc)).first()
+                
+                if last_fill:
+                    # Busca fills após o último
+                    last_ts = int(last_fill.ts_utc.timestamp() * 1000)
+                    
+                    if hasattr(client, 'get_user_fills_by_time'):
+                        new_fills = client.get_user_fills_by_time(start_time=last_ts + 1)
+                    else:
+                        new_fills = client.get_user_fills(limit=100)
+                else:
+                    # Primeiro sync - faz backfill completo
+                    return self.backfill_from_exchange(client)
+            
+            if not new_fills:
+                return 0
+            
+            count = 0
+            for fill in new_fills:
+                side = fill.get('side', '')
+                if side == 'A':
+                    side = 'sell'
+                elif side == 'B':
+                    side = 'buy'
+                
+                normalized = {
+                    'trade_id': fill.get('trade_id'),
+                    'ts_utc': fill.get('ts_utc'),
+                    'symbol': fill.get('symbol'),
+                    'side': side,
+                    'qty': fill.get('qty'),
+                    'price': fill.get('price'),
+                    'fee': fill.get('fee', 0),
+                    'realized_pnl': fill.get('realized_pnl', 0),
+                    'order_id': fill.get('order_id'),
+                    'is_close': fill.get('is_close', False)
+                }
+                
+                if self.record_fill(normalized):
+                    count += 1
+            
+            if count > 0:
+                logger.info(f"[TELEMETRY] Sync incremental: {count} novos fills")
+            
+            return count
+            
+        except Exception as e:
+            logger.error(f"[TELEMETRY] Erro no sync incremental: {e}")
             return 0
     
     # ============================================================
