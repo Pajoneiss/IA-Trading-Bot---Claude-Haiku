@@ -293,6 +293,34 @@ class PositionManager:
             del self.positions[symbol]
             logger.info(f"Posição removida: {symbol}")
     
+    def remove_position_with_exit(self, symbol: str, exit_price: float, pnl_pct: float):
+        """
+        Remove posição e registra o exit para tracking anti-churn.
+        
+        Args:
+            symbol: Símbolo da posição
+            exit_price: Preço de saída
+            pnl_pct: PnL percentual realizado
+        """
+        if symbol not in self.positions:
+            return
+        
+        pos = self.positions[symbol]
+        side = pos.side
+        
+        # Registra exit para anti-churn
+        try:
+            from bot.runtime_snapshot import record_exit
+            record_exit(symbol, side, exit_price, pnl_pct)
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning(f"[PM] Erro ao registrar exit: {e}")
+        
+        # Remove posição
+        del self.positions[symbol]
+        logger.info(f"Posição removida com exit: {symbol} @ ${exit_price:.2f} ({pnl_pct:+.2f}%)")
+    
     def update_stop_loss(self, symbol: str, new_sl_pct: float):
         """
         Atualiza o stop_loss_pct da posição e recalcula stop_loss_price.
