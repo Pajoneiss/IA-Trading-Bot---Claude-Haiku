@@ -342,6 +342,128 @@ class HyperliquidBotClient:
         
         return funding_rates
     
+    def get_user_fills(self, limit: int = 500) -> List[Dict[str, Any]]:
+        """
+        Obtém histórico de fills/trades do usuário.
+        
+        API Hyperliquid: userFills
+        
+        Args:
+            limit: Máximo de fills a retornar (default 500)
+            
+        Returns:
+            Lista de fills com: time, coin, side, sz, px, fee, closedPnl, etc
+        """
+        import time as time_module
+        
+        payload = {
+            "type": "userFills",
+            "user": self.wallet_address
+        }
+        
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    wait_time = 2 ** attempt
+                    self.logger.warning(f"[HYPERLIQUID] get_user_fills retry {attempt+1}, aguardando {wait_time}s...")
+                    time_module.sleep(wait_time)
+                
+                response = self.requests.post(self.info_url, json=payload, timeout=15)
+                response.raise_for_status()
+                data = response.json()
+                
+                # Formata fills
+                fills = []
+                for fill in data[:limit]:
+                    fills.append({
+                        'trade_id': fill.get('tid') or fill.get('hash') or f"{fill.get('coin')}_{fill.get('time')}",
+                        'ts_utc': fill.get('time'),  # Epoch ms
+                        'symbol': fill.get('coin'),
+                        'side': fill.get('side'),  # 'A' (Ask/sell) ou 'B' (Bid/buy)
+                        'qty': abs(float(fill.get('sz', 0))),
+                        'price': float(fill.get('px', 0)),
+                        'fee': float(fill.get('fee', 0)),
+                        'realized_pnl': float(fill.get('closedPnl', 0)),
+                        'order_id': fill.get('oid'),
+                        'is_close': float(fill.get('closedPnl', 0)) != 0,
+                        'dir': fill.get('dir'),  # 'Open Long', 'Close Short', etc
+                        'crossed': fill.get('crossed'),  # True = taker
+                    })
+                
+                self.logger.info(f"[HYPERLIQUID] Carregados {len(fills)} fills")
+                return fills
+                
+            except self.requests.exceptions.HTTPError as e:
+                if e.response.status_code == 429:
+                    if attempt == max_retries - 1:
+                        self.logger.error("[HYPERLIQUID] Rate limit em get_user_fills")
+                        return []
+                    continue
+                else:
+                    self.logger.error(f"[HYPERLIQUID] Erro HTTP em get_user_fills: {e}")
+                    return []
+            
+            except Exception as e:
+                self.logger.error(f"[HYPERLIQUID] Erro em get_user_fills: {e}")
+                return []
+        
+        return []
+    
+    def get_user_fills_by_time(self, start_time: int = None, end_time: int = None) -> List[Dict[str, Any]]:
+        """
+        Obtém fills por período de tempo.
+        
+        Args:
+            start_time: Epoch ms do início
+            end_time: Epoch ms do fim
+            
+        Returns:
+            Lista de fills no período
+        """
+        import time as time_module
+        
+        if end_time is None:
+            end_time = int(time_module.time() * 1000)
+        
+        if start_time is None:
+            start_time = end_time - (30 * 24 * 60 * 60 * 1000)  # 30 dias atrás
+        
+        payload = {
+            "type": "userFillsByTime",
+            "user": self.wallet_address,
+            "startTime": start_time,
+            "endTime": end_time
+        }
+        
+        try:
+            response = self.requests.post(self.info_url, json=payload, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            
+            fills = []
+            for fill in data:
+                fills.append({
+                    'trade_id': fill.get('tid') or fill.get('hash') or f"{fill.get('coin')}_{fill.get('time')}",
+                    'ts_utc': fill.get('time'),
+                    'symbol': fill.get('coin'),
+                    'side': fill.get('side'),
+                    'qty': abs(float(fill.get('sz', 0))),
+                    'price': float(fill.get('px', 0)),
+                    'fee': float(fill.get('fee', 0)),
+                    'realized_pnl': float(fill.get('closedPnl', 0)),
+                    'order_id': fill.get('oid'),
+                    'is_close': float(fill.get('closedPnl', 0)) != 0,
+                    'dir': fill.get('dir'),
+                })
+            
+            self.logger.info(f"[HYPERLIQUID] Carregados {len(fills)} fills por tempo")
+            return fills
+            
+        except Exception as e:
+            self.logger.error(f"[HYPERLIQUID] Erro em get_user_fills_by_time: {e}")
+            return []
+    
     def _round_price(self, price: float, sz_decimals: int) -> float:
         """Arredonda preço conforme regras da Hyperliquid"""
         if price == 0:
