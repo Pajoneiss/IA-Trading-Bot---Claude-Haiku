@@ -855,6 +855,70 @@ def create_api_server(bot=None) -> Optional["FastAPI"]:
             logger.error(f"[DASHBOARD API] Erro ao setar initial equity: {e}")
             raise HTTPException(status_code=500, detail=str(e))
     
+    @app.post("/api/init-thoughts-table")
+    async def init_thoughts_table(x_api_key: str = Header(None)):
+        """
+        Inicializa a tabela de thoughts no PostgreSQL.
+        Chamada uma vez após deploy para criar a estrutura.
+        """
+        verify_api_key(x_api_key)
+        
+        try:
+            from bot.thought_feed import get_thought_feed, ThoughtFeed, SQLALCHEMY_AVAILABLE
+            
+            if not SQLALCHEMY_AVAILABLE:
+                return {"error": "SQLAlchemy not available"}
+            
+            feed = get_thought_feed()
+            
+            if feed._db_enabled:
+                return {
+                    "status": "ok",
+                    "message": "Tabela ai_thoughts já existe e está conectada",
+                    "db_enabled": True
+                }
+            else:
+                # Força reinicialização
+                feed._init_database()
+                return {
+                    "status": "ok" if feed._db_enabled else "error",
+                    "message": "Tabela criada" if feed._db_enabled else "Falha ao criar tabela",
+                    "db_enabled": feed._db_enabled
+                }
+                
+        except Exception as e:
+            logger.error(f"[DASHBOARD API] Erro ao criar tabela: {e}")
+            return {"error": str(e)}
+    
+    @app.post("/api/test-thought")
+    async def test_thought(x_api_key: str = Header(None)):
+        """
+        Cria um thought de teste para verificar se está funcionando.
+        """
+        verify_api_key(x_api_key)
+        
+        try:
+            from bot.thought_feed import get_thought_feed
+            feed = get_thought_feed()
+            
+            thought = feed.add_thought(
+                type='analysis',
+                summary='Teste de integração - Sistema de thoughts inicializado com sucesso!',
+                symbols=['BTC', 'ETH'],
+                actions=['test'],
+                confidence=1.0
+            )
+            
+            return {
+                "status": "ok",
+                "thought": thought.to_dict(),
+                "db_enabled": feed._db_enabled
+            }
+            
+        except Exception as e:
+            logger.error(f"[DASHBOARD API] Erro ao criar thought de teste: {e}")
+            return {"error": str(e)}
+    
     logger.info("[DASHBOARD API] FastAPI server criado (PREMIUM EDITION + THOUGHTS + CHAT)")
     return app
 
