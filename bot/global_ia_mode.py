@@ -79,13 +79,18 @@ Use TODOS esses dados para tomar decisões inteligentes.
 
 ## EVITE CHURN (REENTRADAS BURRAS)
 
+O STATE inclui um campo `recent_exits` com dados dos últimos fechamentos por símbolo.
+
 Se você acabou de fechar uma posição em um símbolo com pequeno prejuízo (entre -0.1% e -2%):
 - EVITE reentrar imediatamente na mesma direção no mesmo símbolo
 - Considere reentrar apenas se:
   - O preço melhorou significativamente (caiu pelo menos 1% para nova entrada long)
   - Houve mudança clara de contexto (novo candle forte, mudança de regime, volume)
+  - Passou tempo suficiente (pelo menos 30 minutos)
 - Evite o padrão: stop curto → nova entrada quase no mesmo preço
 - Isso aumenta custos de taxa sem melhorar o edge
+
+Use o campo `recent_exits` para tomar decisões mais inteligentes sobre reentradas.
 
 ## FORMATO DE RESPOSTA
 
@@ -210,6 +215,16 @@ class GlobalIAMode:
         Returns:
             Dict com state completo
         """
+        # Busca recent_exits para anti-churn
+        recent_exits = {}
+        try:
+            from bot.runtime_snapshot import get_recent_exits
+            recent_exits = get_recent_exits()
+        except ImportError:
+            pass
+        except Exception as e:
+            self.logger.debug(f"[GLOBAL_IA] Erro ao buscar recent_exits: {e}")
+        
         state = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "account": {
@@ -220,6 +235,7 @@ class GlobalIAMode:
             },
             "positions": self._format_positions(positions),
             "market": self._format_market_snapshot(market_snapshot),
+            "recent_exits": recent_exits,  # Anti-churn data
             "recent_trades": recent_trades or [],
             "mode": "GLOBAL_IA",
             "execution_mode": os.getenv("EXECUTION_MODE", "PAPER_ONLY")
