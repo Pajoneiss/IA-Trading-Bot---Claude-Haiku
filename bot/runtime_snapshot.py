@@ -174,40 +174,91 @@ def build_runtime_snapshot(bot) -> Dict[str, Any]:
 
 
 def _get_execution_mode(bot) -> str:
-    """Retorna modo de execução (PAPER/LIVE/SHADOW)"""
+    """
+    Retorna modo de execução (PAPER_ONLY/SHADOW/LIVE).
+    
+    FONTE ÚNICA DA VERDADE para execution mode.
+    """
+    # 1. Tenta via execution_manager
     try:
         exec_manager = getattr(bot, 'execution_manager', None)
-        if exec_manager:
+        if exec_manager and hasattr(exec_manager, 'current_mode'):
             return exec_manager.current_mode.value
-    except:
+    except Exception:
         pass
     
-    # Fallback
-    return os.getenv("EXECUTION_MODE", "PAPER_ONLY")
+    # 2. Tenta via env EXECUTION_MODE
+    env_mode = os.getenv("EXECUTION_MODE", "")
+    if env_mode:
+        return env_mode
+    
+    # 3. Fallback baseado em live_trading
+    live = getattr(bot, 'live_trading', False)
+    return "LIVE" if live else "PAPER_ONLY"
 
 
 def _get_trading_mode(bot) -> str:
     """Retorna modo de trading (CONSERVADOR/BALANCEADO/AGRESSIVO/GLOBAL_IA)"""
     try:
         mode_manager = getattr(bot, 'mode_manager', None)
-        if mode_manager:
+        if mode_manager and hasattr(mode_manager, 'current_mode'):
             return mode_manager.current_mode.value
-    except:
+    except Exception:
         pass
     return "BALANCEADO"
 
 
 def _build_account_info(bot) -> Dict[str, Any]:
-    """Constrói info da conta"""
-    risk_manager = getattr(bot, 'risk_manager', None)
+    """
+    Constrói info da conta com margem real.
     
-    return {
-        "equity": round(getattr(risk_manager, 'current_equity', 0), 2) if risk_manager else 0,
-        "free_margin": round(getattr(risk_manager, 'free_margin', 0), 2) if risk_manager else 0,
-        "day_pnl_pct": round(getattr(risk_manager, 'daily_pnl_pct', 0), 2) if risk_manager else 0,
-        "week_pnl_pct": round(getattr(risk_manager, 'weekly_pnl_pct', 0), 2) if risk_manager else 0,
-        "daily_drawdown_pct": round(getattr(risk_manager, 'daily_drawdown_pct', 0), 2) if risk_manager else 0
+    Busca dados diretamente do client quando possível.
+    """
+    result = {
+        "equity": 0,
+        "free_margin": 0,
+        "used_margin": 0,
+        "available_balance": 0,
+        "day_pnl_pct": 0,
+        "week_pnl_pct": 0,
+        "daily_drawdown_pct": 0
     }
+    
+    # Tenta buscar do user_state (dados frescos da exchange)
+    try:
+        client = getattr(bot, 'client', None)
+        if client:
+            user_state = client.get_user_state()
+            
+            # Campos que Hyperliquid pode retornar
+            equity = float(user_state.get('account_value', 0) or user_state.get('accountValue', 0) or 0)
+            withdrawable = float(user_state.get('withdrawable', 0) or 0)
+            margin_used = float(user_state.get('margin_used', 0) or user_state.get('marginUsed', 0) or 0)
+            
+            result["equity"] = round(equity, 2)
+            result["available_balance"] = round(withdrawable, 2)
+            result["used_margin"] = round(margin_used, 2)
+            
+            # free_margin = equity - margin_used (estimativa)
+            # Se withdrawable disponível, usa ele
+            if withdrawable > 0:
+                result["free_margin"] = round(withdrawable, 2)
+            elif equity > 0 and margin_used >= 0:
+                result["free_margin"] = round(max(0, equity - margin_used), 2)
+            else:
+                result["free_margin"] = round(equity * 0.8, 2)  # Estimativa 80%
+    except Exception as e:
+        logger.debug(f"[SNAPSHOT] Erro ao buscar user_state: {e}")
+    
+    # Complementa com dados do risk_manager
+    risk_manager = getattr(bot, 'risk_manager', None)
+    if risk_manager:
+        if result["equity"] == 0:
+            result["equity"] = round(getattr(risk_manager, 'current_equity', 0), 2)
+        result["day_pnl_pct"] = round(getattr(risk_manager, 'daily_drawdown_pct', 0), 2)  # Note: daily_drawdown_pct é o PnL do dia
+        result["daily_drawdown_pct"] = round(abs(min(0, getattr(risk_manager, 'daily_drawdown_pct', 0))), 2)
+    
+    return result
 
 
 def _build_positions_info(bot) -> Dict[str, Any]:
