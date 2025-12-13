@@ -1,131 +1,52 @@
 'use client'
-
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts'
 
 // Types
-interface Position {
-  symbol: string
-  side: string
-  size: number
-  entry_price: number
-  current_price: number
-  pnl_pct: number
-  pnl_usd?: number
-  leverage: number
-  stop_loss_price?: number
-  take_profit_price?: number
-}
+interface Position { symbol: string; side: string; size: number; entry_price: number; current_price: number; pnl_pct: number; leverage: number }
+interface BotSnapshot { timestamp_utc: string; execution: { mode: string; trading_mode: string; is_paused: boolean }; account: { equity: number; free_margin: number; day_pnl_pct: number }; positions: { count: number; list: Position[]; total_pnl_usd: number }; ai_budget: { claude_calls_today: number; claude_limit_per_day: number; openai_calls_today: number; openai_limit_per_day: number }; global_ia: { enabled: boolean; last_call_minutes_ago?: number } }
+interface PnLSummary { current_equity: number; pnl_all_time_pct: number; pnl_all_time_usd: number; pnl_day_pct: number; pnl_day_usd: number; pnl_week_pct: number; pnl_week_usd: number; pnl_month_pct: number; pnl_month_usd: number; winrate: number; profit_factor: number; max_drawdown_pct: number; total_trades: number }
+interface EquityPoint { ts: string; equity_usd: number }
+interface Fill { id: number; ts: string; symbol: string; side: string; qty: number; price: number; realized_pnl: number }
 
-interface BotSnapshot {
-  timestamp_utc: string
-  execution: {
-    mode: string
-    trading_mode: string
-    is_paused: boolean
-    live_trading: boolean
-  }
-  account: {
-    equity: number
-    free_margin: number
-    day_pnl_pct: number
-    week_pnl_pct?: number
-  }
-  positions: {
-    count: number
-    list: Position[]
-    total_pnl_usd: number
-  }
-  ai_budget: {
-    claude_calls_today: number
-    claude_limit_per_day: number
-    openai_calls_today: number
-    openai_limit_per_day: number
-    budget_ok: boolean
-  }
-  global_ia: {
-    enabled: boolean
-    last_call_time?: string
-    last_call_minutes_ago?: number
-  }
-}
+// Components
+const Card = ({ title, children, className = '' }: { title?: string; children: React.ReactNode; className?: string }) => (
+  <div className={`bg-dark-700 rounded-xl border border-dark-500 p-4 ${className}`}>
+    {title && <div className="text-sm font-medium text-neutral mb-3">{title}</div>}
+    {children}
+  </div>
+)
 
-interface SeriesPoint {
-  ts: string
-  equity: number
-  day_pnl_pct: number
-}
-
-interface Metrics {
-  total_trades?: number
-  wins?: number
-  losses?: number
-  win_rate?: number
-  profit_factor?: number
-  avg_win?: number
-  avg_loss?: number
-  net_pnl?: number
-}
-
-// Card component
-function Card({ title, children, className = '' }: { title?: string; children: React.ReactNode; className?: string }) {
+const PnLCard = ({ title, pct, usd, highlight = false }: { title: string; pct: number; usd: number; highlight?: boolean }) => {
+  const pos = pct >= 0
   return (
-    <div className={`bg-dark-700 rounded-xl border border-dark-500 p-6 ${className}`}>
-      {title && <div className="text-sm font-medium text-neutral mb-2">{title}</div>}
-      {children}
+    <div className={`bg-dark-700 rounded-xl border p-4 ${highlight ? (pos ? 'border-profit/30 bg-profit/5' : 'border-loss/30 bg-loss/5') : 'border-dark-500'}`}>
+      <div className="text-xs text-neutral mb-1">{title}</div>
+      <div className={`text-2xl font-bold ${pos ? 'text-profit' : 'text-loss'}`}>{pos ? '+' : ''}{pct.toFixed(2)}%</div>
+      <div className={`text-sm ${pos ? 'text-profit' : 'text-loss'}`}>{pos ? '+' : ''}${usd.toFixed(2)}</div>
     </div>
   )
 }
 
-// Stat card
-function StatCard({ title, value, suffix = '', pnl = false }: { title: string; value: number | string; suffix?: string; pnl?: boolean }) {
-  const numValue = typeof value === 'number' ? value : parseFloat(value) || 0
-  const colorClass = pnl ? (numValue > 0 ? 'text-profit' : numValue < 0 ? 'text-loss' : 'text-neutral') : 'text-white'
-  const displayValue = typeof value === 'number' 
-    ? (pnl ? `${value >= 0 ? '+' : ''}${value.toFixed(2)}` : value.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
-    : value
-
+const EquityChart = ({ data, range, onRangeChange }: { data: EquityPoint[]; range: string; onRangeChange: (r: string) => void }) => {
+  if (!data?.length) return <Card title="📈 Equity Curve"><div className="h-64 flex items-center justify-center text-neutral">Aguardando dados...</div></Card>
+  const chartData = data.map(p => ({ time: new Date(p.ts).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }), equity: p.equity_usd }))
+  const vals = data.map(d => d.equity_usd)
   return (
-    <Card title={title}>
-      <div className={`text-2xl font-bold ${colorClass}`}>{displayValue}{suffix}</div>
-    </Card>
-  )
-}
-
-// Equity Chart
-function EquityChart({ data, range }: { data: SeriesPoint[]; range: string }) {
-  if (!data || data.length === 0) {
-    return (
-      <Card title="📈 Equity Curve">
-        <div className="h-64 flex items-center justify-center text-neutral">Sem dados disponíveis</div>
-      </Card>
-    )
-  }
-
-  const chartData = data.map(point => ({
-    time: new Date(point.ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
-    equity: point.equity
-  }))
-
-  return (
-    <Card title={`📈 Equity Curve (${range})`}>
+    <Card>
+      <div className="flex items-center justify-between mb-4">
+        <span className="text-sm font-medium">📈 Equity Curve (ALL TIME)</span>
+        <div className="flex gap-1">{['1d', '7d', '30d', 'all'].map(r => <button key={r} onClick={() => onRangeChange(r)} className={`px-2 py-1 rounded text-xs ${range === r ? 'bg-blue-500 text-white' : 'bg-dark-600 text-neutral'}`}>{r.toUpperCase()}</button>)}</div>
+      </div>
       <div className="h-64">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={chartData}>
-            <defs>
-              <linearGradient id="colorEquity" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
-                <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
-              </linearGradient>
-            </defs>
+            <defs><linearGradient id="colorEq" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#3b82f6" stopOpacity={0.4}/><stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/></linearGradient></defs>
             <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-            <XAxis dataKey="time" stroke="#666" tick={{ fill: '#888', fontSize: 11 }} />
-            <YAxis stroke="#666" tick={{ fill: '#888', fontSize: 11 }} tickFormatter={(v) => `$${v}`} />
-            <Tooltip 
-              contentStyle={{ backgroundColor: '#1a1a1a', border: '1px solid #333', borderRadius: '8px' }}
-              formatter={(value: number) => [`$${value.toFixed(2)}`, 'Equity']}
-            />
-            <Area type="monotone" dataKey="equity" stroke="#3b82f6" fill="url(#colorEquity)" strokeWidth={2} />
+            <XAxis dataKey="time" stroke="#666" tick={{ fill: '#888', fontSize: 10 }} interval="preserveStartEnd"/>
+            <YAxis stroke="#666" tick={{ fill: '#888', fontSize: 10 }} domain={[Math.min(...vals) * 0.995, Math.max(...vals) * 1.005]} tickFormatter={v => `$${v.toFixed(0)}`}/>
+            <Tooltip contentStyle={{ backgroundColor: '#1a1a1a', border: '1px solid #333', borderRadius: '8px' }} formatter={(v: number) => [`$${v.toFixed(2)}`, 'Equity']}/>
+            <Area type="monotone" dataKey="equity" stroke="#3b82f6" fill="url(#colorEq)" strokeWidth={2} />
           </AreaChart>
         </ResponsiveContainer>
       </div>
@@ -133,325 +54,156 @@ function EquityChart({ data, range }: { data: SeriesPoint[]; range: string }) {
   )
 }
 
-// Metrics panel
-function MetricsPanel({ metrics, range }: { metrics: Metrics; range: string }) {
-  if (!metrics || Object.keys(metrics).length === 0) {
-    return (
-      <Card title={`📊 Métricas (${range})`}>
-        <div className="text-neutral text-center py-4">Sem métricas disponíveis</div>
-      </Card>
-    )
-  }
-
-  return (
-    <Card title={`📊 Métricas (${range})`}>
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <div className="text-xs text-neutral">Win Rate</div>
-          <div className={`text-lg font-medium ${(metrics.win_rate || 0) >= 50 ? 'text-profit' : 'text-loss'}`}>
-            {metrics.win_rate?.toFixed(1) || '—'}%
-          </div>
-        </div>
-        <div>
-          <div className="text-xs text-neutral">Profit Factor</div>
-          <div className={`text-lg font-medium ${(metrics.profit_factor || 0) >= 1 ? 'text-profit' : 'text-loss'}`}>
-            {metrics.profit_factor?.toFixed(2) || '—'}
-          </div>
-        </div>
-        <div>
-          <div className="text-xs text-neutral">Trades</div>
-          <div className="text-lg font-medium">{metrics.total_trades || 0}</div>
-        </div>
-        <div>
-          <div className="text-xs text-neutral">Net PnL</div>
-          <div className={`text-lg font-medium ${(metrics.net_pnl || 0) >= 0 ? 'text-profit' : 'text-loss'}`}>
-            ${metrics.net_pnl?.toFixed(2) || '0.00'}
-          </div>
-        </div>
-        <div>
-          <div className="text-xs text-neutral">Avg Win</div>
-          <div className="text-lg font-medium text-profit">${metrics.avg_win?.toFixed(2) || '0.00'}</div>
-        </div>
-        <div>
-          <div className="text-xs text-neutral">Avg Loss</div>
-          <div className="text-lg font-medium text-loss">${metrics.avg_loss?.toFixed(2) || '0.00'}</div>
-        </div>
-      </div>
-    </Card>
-  )
-}
-
-// Positions table
-function PositionsTable({ positions }: { positions: Position[] }) {
-  if (!positions || positions.length === 0) {
-    return (
-      <Card title="Posições Abertas">
-        <div className="text-neutral text-center py-8">Nenhuma posição aberta</div>
-      </Card>
-    )
-  }
-
-  return (
-    <Card title={`Posições Abertas (${positions.length})`}>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-neutral border-b border-dark-500">
-              <th className="text-left py-3 px-2">Symbol</th>
-              <th className="text-left py-3 px-2">Side</th>
-              <th className="text-right py-3 px-2">Size</th>
-              <th className="text-right py-3 px-2">Entry</th>
-              <th className="text-right py-3 px-2">Price</th>
-              <th className="text-right py-3 px-2">PnL %</th>
-              <th className="text-right py-3 px-2">Lev</th>
-            </tr>
-          </thead>
-          <tbody>
-            {positions.map((pos, i) => (
-              <tr key={i} className="border-b border-dark-600 hover:bg-dark-600">
-                <td className="py-3 px-2 font-medium">{pos.symbol}</td>
-                <td className={`py-3 px-2 ${pos.side === 'long' ? 'text-profit' : 'text-loss'}`}>
-                  {pos.side.toUpperCase()}
-                </td>
-                <td className="py-3 px-2 text-right">{pos.size}</td>
-                <td className="py-3 px-2 text-right">${pos.entry_price?.toFixed(2)}</td>
-                <td className="py-3 px-2 text-right">${pos.current_price?.toFixed(2)}</td>
-                <td className={`py-3 px-2 text-right font-medium ${pos.pnl_pct >= 0 ? 'text-profit' : 'text-loss'}`}>
-                  {pos.pnl_pct >= 0 ? '+' : ''}{pos.pnl_pct?.toFixed(2)}%
-                </td>
-                <td className="py-3 px-2 text-right">{pos.leverage}x</td>
-              </tr>
-            ))}
-          </tbody>
+const TradesTable = ({ fills, range, onRangeChange }: { fills: Fill[]; range: string; onRangeChange: (r: string) => void }) => (
+  <Card>
+    <div className="flex items-center justify-between mb-4">
+      <span className="text-sm font-medium">📋 Histórico de Trades ({fills.length})</span>
+      <div className="flex gap-1">{['7d', '30d', 'all'].map(r => <button key={r} onClick={() => onRangeChange(r)} className={`px-2 py-1 rounded text-xs ${range === r ? 'bg-blue-500 text-white' : 'bg-dark-600 text-neutral'}`}>{r.toUpperCase()}</button>)}</div>
+    </div>
+    {!fills.length ? <div className="text-neutral text-center py-8">Nenhum trade</div> : (
+      <div className="overflow-x-auto max-h-72">
+        <table className="w-full text-xs">
+          <thead className="sticky top-0 bg-dark-700"><tr className="text-neutral border-b border-dark-500"><th className="text-left py-2 px-2">Data</th><th className="text-left py-2 px-2">Symbol</th><th className="text-left py-2 px-2">Side</th><th className="text-right py-2 px-2">Qty</th><th className="text-right py-2 px-2">Price</th><th className="text-right py-2 px-2">PnL</th></tr></thead>
+          <tbody>{fills.map((f, i) => <tr key={f.id || i} className="border-b border-dark-600 hover:bg-dark-600"><td className="py-2 px-2 text-neutral">{new Date(f.ts).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td><td className="py-2 px-2 font-medium">{f.symbol}</td><td className={`py-2 px-2 ${f.side === 'buy' || f.side === 'long' ? 'text-profit' : 'text-loss'}`}>{f.side?.toUpperCase()}</td><td className="py-2 px-2 text-right">{f.qty}</td><td className="py-2 px-2 text-right">${f.price?.toFixed(2)}</td><td className={`py-2 px-2 text-right font-medium ${f.realized_pnl >= 0 ? 'text-profit' : 'text-loss'}`}>{f.realized_pnl >= 0 ? '+' : ''}${f.realized_pnl?.toFixed(2)}</td></tr>)}</tbody>
         </table>
       </div>
-    </Card>
-  )
-}
+    )}
+  </Card>
+)
 
-// AI Status panel
-function AIStatusPanel({ globalIa, aiBudget }: { globalIa: BotSnapshot['global_ia']; aiBudget: BotSnapshot['ai_budget'] }) {
+const PositionsTable = ({ positions }: { positions: Position[] }) => (
+  <Card title={`📊 Posições (${positions?.length || 0})`}>
+    {!positions?.length ? <div className="text-neutral text-center py-4">Nenhuma posição</div> : (
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead><tr className="text-neutral border-b border-dark-500"><th className="text-left py-2 px-2">Symbol</th><th className="text-left py-2 px-2">Side</th><th className="text-right py-2 px-2">Size</th><th className="text-right py-2 px-2">Entry</th><th className="text-right py-2 px-2">Price</th><th className="text-right py-2 px-2">PnL</th></tr></thead>
+          <tbody>{positions.map((p, i) => <tr key={i} className="border-b border-dark-600"><td className="py-2 px-2 font-medium">{p.symbol}</td><td className={`py-2 px-2 ${p.side === 'long' ? 'text-profit' : 'text-loss'}`}>{p.side?.toUpperCase()}</td><td className="py-2 px-2 text-right">{p.size}</td><td className="py-2 px-2 text-right">${p.entry_price?.toFixed(2)}</td><td className="py-2 px-2 text-right">${p.current_price?.toFixed(2)}</td><td className={`py-2 px-2 text-right font-medium ${p.pnl_pct >= 0 ? 'text-profit' : 'text-loss'}`}>{p.pnl_pct >= 0 ? '+' : ''}{p.pnl_pct?.toFixed(2)}%</td></tr>)}</tbody>
+        </table>
+      </div>
+    )}
+  </Card>
+)
+
+const MetricsPanel = ({ pnl }: { pnl: PnLSummary | null }) => {
+  if (!pnl) return <Card title="📊 Métricas"><div className="text-neutral text-center py-4">Carregando...</div></Card>
   return (
-    <Card title="🧠 GLOBAL_IA Status">
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <span className="text-neutral">Status</span>
-          <span className={`px-3 py-1 rounded-full text-sm font-medium ${globalIa.enabled ? 'bg-profit/20 text-profit' : 'bg-neutral/20 text-neutral'}`}>
-            {globalIa.enabled ? '✅ ATIVO' : '❌ INATIVO'}
-          </span>
-        </div>
-        
-        {globalIa.last_call_minutes_ago !== undefined && (
-          <div className="flex items-center justify-between">
-            <span className="text-neutral">Última chamada</span>
-            <span className="text-white">{globalIa.last_call_minutes_ago?.toFixed(1)} min atrás</span>
-          </div>
-        )}
-        
-        <div className="border-t border-dark-500 pt-4">
-          <div className="text-neutral text-sm mb-2">AI Budget</div>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <div className="text-xs text-neutral">Claude</div>
-              <div className="text-lg font-medium">{aiBudget?.claude_calls_today || 0}/{aiBudget?.claude_limit_per_day || 12}</div>
-              <div className="w-full bg-dark-500 rounded-full h-2 mt-1">
-                <div className="bg-purple-500 h-2 rounded-full" style={{ width: `${Math.min(100, ((aiBudget?.claude_calls_today || 0) / (aiBudget?.claude_limit_per_day || 12)) * 100)}%` }} />
-              </div>
-            </div>
-            <div>
-              <div className="text-xs text-neutral">OpenAI</div>
-              <div className="text-lg font-medium">{aiBudget?.openai_calls_today || 0}/{aiBudget?.openai_limit_per_day || 40}</div>
-              <div className="w-full bg-dark-500 rounded-full h-2 mt-1">
-                <div className="bg-cyan-500 h-2 rounded-full" style={{ width: `${Math.min(100, ((aiBudget?.openai_calls_today || 0) / (aiBudget?.openai_limit_per_day || 40)) * 100)}%` }} />
-              </div>
-            </div>
-          </div>
-        </div>
+    <Card title="📊 Performance">
+      <div className="grid grid-cols-2 gap-3">
+        <div><div className="text-xs text-neutral">Win Rate</div><div className={`text-lg font-semibold ${pnl.winrate >= 50 ? 'text-profit' : 'text-loss'}`}>{pnl.winrate?.toFixed(1) || 0}%</div></div>
+        <div><div className="text-xs text-neutral">Profit Factor</div><div className={`text-lg font-semibold ${pnl.profit_factor >= 1 ? 'text-profit' : 'text-loss'}`}>{pnl.profit_factor?.toFixed(2) || 0}</div></div>
+        <div><div className="text-xs text-neutral">Max Drawdown</div><div className="text-lg font-semibold text-loss">-{pnl.max_drawdown_pct?.toFixed(1) || 0}%</div></div>
+        <div><div className="text-xs text-neutral">Total Trades</div><div className="text-lg font-semibold">{pnl.total_trades || 0}</div></div>
       </div>
     </Card>
   )
 }
 
-// Range selector
-function RangeSelector({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const ranges = ['1h', '24h', '7d', '30d']
-  return (
-    <div className="flex gap-2">
-      {ranges.map(r => (
-        <button
-          key={r}
-          onClick={() => onChange(r)}
-          className={`px-3 py-1 rounded text-sm ${value === r ? 'bg-blue-500 text-white' : 'bg-dark-600 text-neutral hover:bg-dark-500'}`}
-        >
-          {r.toUpperCase()}
-        </button>
-      ))}
+const AIPanel = ({ globalIa, aiBudget }: { globalIa: BotSnapshot['global_ia']; aiBudget: BotSnapshot['ai_budget'] }) => (
+  <Card title="🧠 GLOBAL_IA">
+    <div className="space-y-3">
+      <div className="flex items-center justify-between"><span className="text-neutral text-xs">Status</span><span className={`px-2 py-0.5 rounded-full text-xs ${globalIa.enabled ? 'bg-profit/20 text-profit' : 'bg-neutral/20 text-neutral'}`}>{globalIa.enabled ? '✅ ON' : '❌ OFF'}</span></div>
+      {globalIa.last_call_minutes_ago !== undefined && <div className="flex items-center justify-between"><span className="text-neutral text-xs">Last</span><span className="text-xs">{globalIa.last_call_minutes_ago?.toFixed(0)}min</span></div>}
+      <div className="pt-2 border-t border-dark-500 grid grid-cols-2 gap-2">
+        <div><div className="text-xs text-neutral">Claude</div><div className="text-sm">{aiBudget?.claude_calls_today || 0}/{aiBudget?.claude_limit_per_day || 12}</div><div className="w-full bg-dark-500 rounded-full h-1.5 mt-1"><div className="bg-purple-500 h-1.5 rounded-full" style={{ width: `${Math.min(100, ((aiBudget?.claude_calls_today || 0) / (aiBudget?.claude_limit_per_day || 12)) * 100)}%` }} /></div></div>
+        <div><div className="text-xs text-neutral">OpenAI</div><div className="text-sm">{aiBudget?.openai_calls_today || 0}/{aiBudget?.openai_limit_per_day || 40}</div><div className="w-full bg-dark-500 rounded-full h-1.5 mt-1"><div className="bg-cyan-500 h-1.5 rounded-full" style={{ width: `${Math.min(100, ((aiBudget?.openai_calls_today || 0) / (aiBudget?.openai_limit_per_day || 40)) * 100)}%` }} /></div></div>
+      </div>
     </div>
-  )
+  </Card>
+)
+
+const Badge = ({ mode, paused }: { mode: string; paused: boolean }) => {
+  if (paused) return <span className="px-2 py-1 rounded-full bg-yellow-500/20 text-yellow-500 text-xs">⏸️ PAUSED</span>
+  const m = mode?.toUpperCase() || 'UNKNOWN'
+  const c: Record<string, string> = { 'LIVE': 'bg-red-500/20 text-red-400', 'PAPER_ONLY': 'bg-blue-500/20 text-blue-400', 'PAPER': 'bg-blue-500/20 text-blue-400', 'SHADOW': 'bg-purple-500/20 text-purple-400' }
+  const i: Record<string, string> = { 'LIVE': '🔴', 'PAPER_ONLY': '🟢', 'PAPER': '🟢', 'SHADOW': '🟣' }
+  return <span className={`px-2 py-1 rounded-full text-xs ${c[m] || 'bg-neutral/20 text-neutral'}`}>{i[m] || '⚪'} {m === 'PAPER_ONLY' ? 'PAPER' : m}</span>
 }
 
-// Status badge - FONTE ÚNICA: execution_mode
-function StatusBadge({ mode, paused }: { mode: string; paused: boolean }) {
-  if (paused) return <span className="px-3 py-1 rounded-full bg-yellow-500/20 text-yellow-500 text-sm">⏸️ PAUSADO</span>
-  
-  // Normaliza o modo
-  const normalizedMode = mode?.toUpperCase() || 'UNKNOWN'
-  
-  const colors: Record<string, string> = {
-    'LIVE': 'bg-red-500/20 text-red-400',
-    'PAPER_ONLY': 'bg-blue-500/20 text-blue-400',
-    'PAPER': 'bg-blue-500/20 text-blue-400',
-    'SHADOW': 'bg-purple-500/20 text-purple-400',
-  }
-  
-  const icons: Record<string, string> = {
-    'LIVE': '🔴',
-    'PAPER_ONLY': '🟢',
-    'PAPER': '🟢',
-    'SHADOW': '🟣',
-  }
-  
-  const displayMode = normalizedMode === 'PAPER_ONLY' ? 'PAPER' : normalizedMode
-  const icon = icons[normalizedMode] || '⚪'
-  
-  return (
-    <span className={`px-3 py-1 rounded-full text-sm font-medium ${colors[normalizedMode] || 'bg-neutral/20 text-neutral'}`}>
-      {icon} {displayMode}
-    </span>
-  )
-}
-
-// Main dashboard
+// Main Dashboard
 export function Dashboard() {
   const [snapshot, setSnapshot] = useState<BotSnapshot | null>(null)
-  const [series, setSeries] = useState<SeriesPoint[]>([])
-  const [metrics, setMetrics] = useState<Metrics>({})
+  const [pnlSummary, setPnlSummary] = useState<PnLSummary | null>(null)
+  const [equitySeries, setEquitySeries] = useState<EquityPoint[]>([])
+  const [fills, setFills] = useState<Fill[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
-  const [range, setRange] = useState('24h')
+  const [chartRange, setChartRange] = useState('7d')
+  const [tradesRange, setTradesRange] = useState('7d')
+  const [stale, setStale] = useState(false)
 
-  const fetchSnapshot = async () => {
+  const fetchData = useCallback(async () => {
     try {
-      const res = await fetch('/api/bot-snapshot', { cache: 'no-store' })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
-      if (data.error) throw new Error(data.error)
-      setSnapshot(data)
-      setError(null)
-      setLastUpdate(new Date())
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Erro desconhecido')
-    } finally {
-      setLoading(false)
-    }
-  }
+      const [snapRes, pnlRes] = await Promise.all([
+        fetch('/api/bot-snapshot', { cache: 'no-store' }),
+        fetch('/api/bot-pnl-summary', { cache: 'no-store' })
+      ])
+      if (snapRes.ok) { const d = await snapRes.json(); if (!d.error) { setSnapshot(d); setError(null); setLastUpdate(new Date()); setStale(false) } }
+      if (pnlRes.ok) { const d = await pnlRes.json(); if (!d.error) setPnlSummary(d) }
+    } catch (e) { console.error(e); setStale(true); if (!snapshot) setError(e instanceof Error ? e.message : 'Erro') }
+    finally { setLoading(false) }
+  }, [snapshot])
 
-  const fetchSeries = async () => {
+  const fetchSeries = useCallback(async () => {
     try {
-      const res = await fetch(`/api/bot-series?range=${range}`, { cache: 'no-store' })
-      if (res.ok) {
-        const data = await res.json()
-        setSeries(data.data || [])
-      }
-    } catch (err) {
-      console.error('Error fetching series:', err)
-    }
-  }
+      const res = await fetch(`/api/bot-pnl-series?range=${chartRange}`, { cache: 'no-store' })
+      if (res.ok) { const d = await res.json(); setEquitySeries(d.data || []) }
+    } catch (e) { console.error(e) }
+  }, [chartRange])
 
-  const fetchMetrics = async () => {
+  const fetchFills = useCallback(async () => {
     try {
-      const res = await fetch(`/api/bot-metrics?range=${range}`, { cache: 'no-store' })
-      if (res.ok) {
-        const data = await res.json()
-        setMetrics(data.metrics || {})
-      }
-    } catch (err) {
-      console.error('Error fetching metrics:', err)
-    }
-  }
+      const res = await fetch(`/api/bot-fills?range=${tradesRange}`, { cache: 'no-store' })
+      if (res.ok) { const d = await res.json(); setFills(d.fills || []) }
+    } catch (e) { console.error(e) }
+  }, [tradesRange])
 
-  useEffect(() => {
-    fetchSnapshot()
-    fetchSeries()
-    fetchMetrics()
-    const interval = setInterval(() => { fetchSnapshot(); fetchSeries() }, 30000)
-    return () => clearInterval(interval)
-  }, [])
+  useEffect(() => { fetchData(); fetchSeries(); fetchFills(); const i = setInterval(() => { fetchData(); fetchSeries() }, 15000); return () => clearInterval(i) }, [])
+  useEffect(() => { fetchSeries() }, [chartRange])
+  useEffect(() => { fetchFills() }, [tradesRange])
 
-  useEffect(() => {
-    fetchSeries()
-    fetchMetrics()
-  }, [range])
+  if (loading) return <div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div></div>
+  if (error && !snapshot) return <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-6 text-center"><div className="text-red-500 text-lg mb-2">❌ Erro</div><div className="text-neutral">{error}</div></div>
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
-      </div>
-    )
-  }
-
-  if (error) {
-    return (
-      <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-6 text-center">
-        <div className="text-red-500 text-lg mb-2">❌ Erro</div>
-        <div className="text-neutral">{error}</div>
-      </div>
-    )
-  }
-
-  if (!snapshot) return <div className="text-center text-neutral">Nenhum dado recebido</div>
-
+  const s = snapshot!
   return (
-    <div className="min-h-screen bg-dark-900 p-6">
-      <header className="flex items-center justify-between mb-8">
-        <div>
-          <h1 className="text-2xl font-bold">🤖 IA Trading Dashboard</h1>
-          <p className="text-neutral text-sm mt-1">Monitoramento em tempo real</p>
-        </div>
-        <div className="flex items-center gap-4">
-          <RangeSelector value={range} onChange={setRange} />
-          <StatusBadge mode={snapshot.execution.mode} paused={snapshot.execution.is_paused} />
+    <div className="min-h-screen bg-dark-900 p-4">
+      {/* Header */}
+      <header className="flex items-center justify-between mb-6">
+        <div><h1 className="text-xl font-bold">🤖 InspetorPro Dashboard</h1><p className="text-neutral text-xs">Premium Trading Analytics</p></div>
+        <div className="flex items-center gap-3">
+          <Badge mode={s.execution.mode} paused={s.execution.is_paused} />
+          {stale && <span className="text-yellow-500 text-xs">⚠️ Stale</span>}
           {lastUpdate && <span className="text-xs text-neutral">{lastUpdate.toLocaleTimeString('pt-BR')}</span>}
         </div>
       </header>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <StatCard title="💰 Equity" value={snapshot.account.equity} suffix=" USD" />
-        <StatCard title="📈 PnL Hoje" value={snapshot.account.day_pnl_pct} suffix="%" pnl />
-        <StatCard 
-          title="💵 Margem Livre" 
-          value={
-            snapshot.execution.mode === 'PAPER_ONLY' || snapshot.execution.mode === 'PAPER'
-              ? (snapshot.account.free_margin > 0 ? snapshot.account.free_margin : snapshot.account.available_balance || snapshot.account.equity * 0.8)
-              : (snapshot.account.free_margin > 0 ? snapshot.account.free_margin : snapshot.account.available_balance || 0)
-          } 
-          suffix=" USD" 
-        />
-        <StatCard title="📊 Posições" value={snapshot.positions.count} />
+      {/* PnL Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+        <PnLCard title="🏆 ALL TIME" pct={pnlSummary?.pnl_all_time_pct || 0} usd={pnlSummary?.pnl_all_time_usd || 0} highlight />
+        <PnLCard title="📅 Hoje" pct={pnlSummary?.pnl_day_pct || s.account.day_pnl_pct || 0} usd={pnlSummary?.pnl_day_usd || 0} />
+        <PnLCard title="📆 Semana" pct={pnlSummary?.pnl_week_pct || 0} usd={pnlSummary?.pnl_week_usd || 0} />
+        <PnLCard title="🗓️ Mês" pct={pnlSummary?.pnl_month_pct || 0} usd={pnlSummary?.pnl_month_usd || 0} />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-        <div className="lg:col-span-2"><EquityChart data={series} range={range} /></div>
-        <div><MetricsPanel metrics={metrics} range={range} /></div>
+      {/* Equity & Metrics */}
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 mb-6">
+        <div className="lg:col-span-3"><EquityChart data={equitySeries} range={chartRange} onRangeChange={setChartRange} /></div>
+        <div><MetricsPanel pnl={pnlSummary} /></div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2"><PositionsTable positions={snapshot.positions.list} /></div>
-        <div><AIStatusPanel globalIa={snapshot.global_ia} aiBudget={snapshot.ai_budget} /></div>
+      {/* Trades & Positions & AI */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2"><TradesTable fills={fills} range={tradesRange} onRangeChange={setTradesRange} /></div>
+        <div className="space-y-4">
+          <PositionsTable positions={s.positions.list} />
+          <AIPanel globalIa={s.global_ia} aiBudget={s.ai_budget} />
+        </div>
       </div>
 
-      <footer className="mt-8 text-center text-neutral text-sm">
-        <p>AI Mode: {snapshot.execution.trading_mode} | Execution: {snapshot.execution.mode}</p>
-        <p className="mt-1">
-          {snapshot.execution.mode === 'LIVE' 
-            ? '🔴 LIVE TRADING (Ordens Reais)' 
-            : snapshot.execution.mode === 'SHADOW'
-            ? '🟣 SHADOW MODE (Simulação + Sinais)'
-            : '🟢 PAPER MODE (Simulação)'
-          }
-        </p>
+      {/* Footer */}
+      <footer className="mt-6 text-center text-neutral text-xs">
+        <p>AI Mode: {s.execution.trading_mode} | Exec: {s.execution.mode} | Equity: ${s.account.equity?.toFixed(2)}</p>
       </footer>
     </div>
   )
