@@ -3182,13 +3182,46 @@ class HyperliquidBot:
         if close_pct > 0:
             self.logger.info(f"📊 Fechando {close_pct*100:.0f}% da posição...")
             
-            reduce_size = position.size * close_pct
+            # ===== FIX: Standardize to COIN SIZE =====
+            position_size_coins = abs(position.size)  # Always positive coins
             sz_decimals = self.client.sz_decimals_cache.get(symbol, 4)
-            reduce_size = round(reduce_size, sz_decimals)
+            
+            # Calculate reduce size in COINS
+            raw_reduce_size = position_size_coins * close_pct
+            
+            # Round DOWN for safety (floor)
+            import math
+            factor = 10 ** sz_decimals
+            reduce_size_coins = math.floor(raw_reduce_size * factor) / factor
+            
+            # Calculate notional for logging
+            notional_est = reduce_size_coins * current_price
+            
+            # ===== STRUCTURED LOGGING (anti-bug) =====
+            self.logger.info(
+                f"[PARTIAL_CLOSE] {symbol} | "
+                f"pct={close_pct*100:.1f}% | "
+                f"position_size={position_size_coins:.6f} coins | "
+                f"reduce_size={reduce_size_coins:.6f} coins | "
+                f"notional_est=${notional_est:.2f} | "
+                f"mark_price=${current_price:.4f}"
+            )
+            
+            # ===== SANITY CHECK: Prevent >95% partial close =====
+            max_partial_pct = 0.95
+            if reduce_size_coins >= position_size_coins * max_partial_pct:
+                self.logger.warning(
+                    f"[PARTIAL_CLOSE] ⛔ {symbol} BLOCKED | "
+                    f"reduce_size={reduce_size_coins:.6f} coins >= "
+                    f"{max_partial_pct*100:.0f}% of position={position_size_coins:.6f} coins. "
+                    f"Converting to FULL CLOSE instead."
+                )
+                # Convert to full close
+                reduce_size_coins = position_size_coins
             
             if not self.live_trading:
                 # Simulação
-                new_size = position.size - reduce_size
+                new_size = position.size - reduce_size_coins
                 if new_size < 0.0001:
                     self.position_manager.remove_position(symbol)
                 else:
@@ -3200,20 +3233,21 @@ class HyperliquidBot:
                     result = self.client.place_order(
                         coin=symbol,
                         is_buy=is_buy_close,
-                        size=reduce_size,
+                        size=reduce_size_coins,  # ← FIX: Use coins, not USD!
                         price=current_price,
                         order_type="market",
                         reduce_only=True
                     )
                     
                     if result.get('status') == 'ok':
-                        new_size = position.size - reduce_size
+                        new_size = position.size - reduce_size_coins
                         if new_size < 0.0001:
                             self.position_manager.remove_position(symbol)
                         else:
                             self.position_manager.update_position(symbol, new_size, position.entry_price)
                 except Exception as e:
                     self.logger.error(f"[AI MANAGE] Erro ao fechar parcial: {e}")
+        
         
         # 2. AJUSTE DE STOP LOSS
         new_stop_price = manage_decision.get('new_stop_price')
